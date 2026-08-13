@@ -81,6 +81,7 @@ public final class RootDnsService extends Service {
 
         publish("Requesting root…", false);
         if (!RootShell.hasRoot()) {
+            AppPrefs.diagnostics(this, "Root check failed: su did not return uid=0");
             fail("Root permission not granted");
             return;
         }
@@ -100,18 +101,22 @@ public final class RootDnsService extends Service {
         publish("Testing DoH upstream…", false);
         if (!engine.healthCheck()) {
             engine.stop();
+            AppPrefs.diagnostics(this, "DoH health check failed before iptables interception.\nEndpoint: " + AppPrefs.endpoint(this));
             fail("DoH test failed; interception was not enabled");
             return;
         }
 
         int uid = getApplicationInfo().uid;
+        publish("Configuring DNS interception…", false);
         RootShell.Result rules = IptablesManager.enable(uid, BuildConfig.DNS_PROXY_PORT);
         if (!rules.ok()) {
+            AppPrefs.diagnostics(this, rules.output);
             engine.stop();
-            fail("iptables failed (code " + rules.code + ")");
+            fail("iptables: " + IptablesManager.failureSummary(rules) + " • see diagnostics");
             return;
         }
 
+        AppPrefs.diagnostics(this, rules.output);
         failedHealthChecks = 0;
         AppPrefs.active(this, true);
         String mode = rules.output.indexOf("IPV6_OK") >= 0 ? "IPv4 + IPv6" : "IPv4";

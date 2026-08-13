@@ -9,6 +9,7 @@ final class AppPrefs {
     private static final String K_AUTO = "a";
     private static final String K_ACTIVE = "x";
     private static final String K_STATUS = "s";
+    private static final String K_DIAG = "d";
 
     private AppPrefs() {}
 
@@ -46,5 +47,13 @@ final class AppPrefs {
 
     static void status(Context context, String value) {
         p(context).edit().putString(K_STATUS, value).apply();
+    }
+
+    static String diagnostics(Context context) {
+        return p(context).getString(K_DIAG, "Not run yet");
+    }
+
+    static void diagnostics(Context context, String value) {
+        p(context).edit().putString(K_DIAG, value == null ? "" : value).apply();
     }
 }

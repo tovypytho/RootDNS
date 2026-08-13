@@ -1,9 +1,18 @@
-Generation-time validation
-==========================
+TommyRootDNS v1.1 generation-time validation
+==============================================
 
-- Pure-Java DNS/root core compiled successfully with javac -source 8 -target 8.
+Completed in the current container:
+
+- RootShell.java + IptablesManager.java compiled with javac -source 8 -target 8 using a BuildConfig stub.
+- NetworkDiagnostics.java compiled with Android/API shape stubs.
+- MainActivity.java compiled with Android/API shape stubs, including Java 8 lambda listener shapes.
 - AndroidManifest.xml and all resource XML files parsed successfully.
 - GitHub Actions workflow YAML parsed successfully.
-- Default endpoint normalization verified:
-    49aa48.dns.nextdns.io -> https://dns.nextdns.io/49aa48
-- Full Android/AGP APK build was not run in the generation container because that container does not include an Android SDK. The included GitHub Actions workflow installs/uses the required CI toolchain and is the intended full build environment.
+- Java source brace scan completed without mismatches.
+- v1 core DNS/DoH source was retained; the previous GitHub run had already reached Java compilation and R8 before the targetSdk lint failure was fixed.
+
+Important limitation:
+
+- A full AGP APK build cannot be executed in this generation container because the Android SDK/Gradle dependencies are not installed and outbound dependency resolution is unavailable here.
+- The included .github/workflows/build-apk.yml is the intended full-build environment and is based on the workflow that already progressed through Java compilation/R8 in GitHub Actions.
+- VPhoneGaGa kernel/netfilter behavior cannot be emulated here. v1.1 therefore adds in-app diagnostics that expose the real iptables/netfilter failure text on the target virtual device.

@@ -1,86 +1,88 @@
-# Tommy RootDNS
+# Tommy RootDNS v1.1
 
-Minimal rooted Android DNS app for Android 7.0+ (API 24). The UI includes a **Tommy** watermark at the top. The default value is `49aa48.dns.nextdns.io`; internally it is normalized to the corresponding NextDNS DNS-over-HTTPS endpoint.
+Minimal rooted Android DNS app for Android 7.0+ (API 24), intended for rooted virtual Android environments such as VPhoneGaGa. The UI keeps the **Tommy** watermark at the top. Default DNS is `49aa48.dns.nextdns.io`, normalized internally to NextDNS DNS-over-HTTPS.
+
+## v1.1 changes
+
+- Exact iptables/root failure text is preserved instead of only showing a numeric code.
+- Added **RUN DIAGNOSTICS** and **COPY DIAGNOSTICS** in the app.
+- Probes root UID, SELinux state, Linux capabilities, ABI, netfilter tables, IPv4 NAT, IPv6 NAT, chain creation, and REDIRECT support.
+- Tries several IPv4 backends: `/system/bin/iptables`, `/system/xbin/iptables`, `/vendor/bin/iptables`, PATH `iptables`, and `busybox iptables`.
+- Same style of fallback probing for `ip6tables`.
+- No longer depends on `xt_owner --uid-owner`; DoH traffic is HTTPS/443 while interception only matches port 53.
+- Uses a dedicated `TOMMY_DNS` chain when possible.
+- If a vendor iptables build can modify OUTPUT but cannot reliably use a custom chain, the app tries exact direct OUTPUT rules.
+- Tries `REDIRECT` first and `DNAT 127.0.0.1:5454` as an IPv4 compatibility fallback.
+- Cleanup removes only TommyRootDNS rules; it never performs a global `iptables -F`.
+- Root-shell output is drained while commands execute to avoid pipe-buffer stalls and is capped before storing diagnostics.
 
 ## What it does
 
-- Requests root through `su`.
-- Starts a local UDP + TCP DNS proxy on `127.0.0.1:5454`.
-- Forwards raw DNS messages to a HTTPS DoH endpoint.
-- Creates its own `TOMMY_DNS` iptables NAT chain and redirects standard TCP/UDP port 53 traffic to the local proxy.
-- Resolves the DoH hostname before enabling interception, caches the bootstrap IPs, then connects directly to those IPs while keeping the original hostname for TLS SNI/certificate verification. This avoids Android 7 resolver recursion.
-- Adds an app-UID exemption when `xt_owner` is available, but does not require it.
-- Applies IPv6 interception when the virtual kernel supports `ip6tables` NAT + REDIRECT.
-- Foreground service + health watchdog; after three consecutive DoH health failures it removes interception rules to restore normal DNS.
-- Optional start-on-boot.
+1. Requests root using `su`.
+2. Starts a local UDP + TCP DNS proxy on `127.0.0.1:5454`.
+3. Bootstraps the configured DoH hostname before DNS interception is enabled.
+4. Forwards DNS messages over HTTPS/443.
+5. Redirects standard TCP/UDP port 53 traffic to the local proxy using root/netfilter rules.
+6. Keeps a foreground service and watchdog running; if the DoH proxy repeatedly fails, interception is removed so normal DNS is restored.
+7. Optionally starts on boot.
 
-Apps that use their own DoH/DoT, their own VPN, or hard-coded destination IPs do not necessarily use system DNS and therefore cannot be guaranteed to pass through port-53 interception.
+Apps that use their own DoH/DoT, VPN, or hard-coded destination IPs do not necessarily use port 53 and therefore cannot be guaranteed to pass through this interception.
+
+## VPhoneGaGa diagnostics
+
+If **ENABLE DNS** fails, press **RUN DIAGNOSTICS**. The report includes the actual command result, for example:
+
+- `Permission denied` / operation not permitted → guest root likely lacks netfilter capability such as `CAP_NET_ADMIN`.
+- `Table does not exist` → the virtual kernel likely does not expose the IPv4/IPv6 NAT table.
+- `not found` → that iptables binary is unavailable; the app will continue trying fallback locations.
+- `No chain/target/match by that name` → a kernel/netfilter target such as `REDIRECT` is missing; v1.1 also tries IPv4 DNAT where appropriate.
+
+The probe chain is never attached to OUTPUT, and is deleted after the test.
 
 ## GitHub Actions build
 
-1. Create a **private** GitHub repository if you want the original source to stay private.
-2. Upload all files from this project to the repository root.
-3. Push to `main`/`master`, or open **Actions → Build APK → Run workflow**.
-4. Open the completed workflow and download the `TommyRootDNS-apk` artifact.
-5. Without signing secrets, install `TommyRootDNS-test-obfuscated.apk`.
+This ZIP already includes:
 
-The workflow uses JDK 17, Gradle 8.13, Android SDK 35 and AGP 8.13.2. Both debug/test and release variants have R8 minification/optimization enabled. The test APK is also set `debuggable=false`.
+`.github/workflows/build-apk.yml`
 
-### Stable release signing (recommended)
+It is designed for GitHub web upload: no local Gradle wrapper is required.
 
-A GitHub-hosted runner is disposable, so a default debug signing key can change between runs. For an APK that can be upgraded in-place, create your own keystore and add these GitHub repository **Actions secrets**:
+1. Upload the **contents** of this project to the repository root.
+2. Commit to `main`/`master`, or open **Actions → Build TommyRootDNS APK → Run workflow**.
+3. Download the `TommyRootDNS-apk` artifact.
+4. Without release-signing secrets, install `TommyRootDNS-test-obfuscated.apk`.
 
-- `ANDROID_KEYSTORE_BASE64` — base64 of the `.jks` file.
+The project currently uses:
+
+- minSdk 24 (Android 7.0)
+- targetSdk 28 intentionally for this legacy/root sideload use case
+- compileSdk 35
+- JDK 17 in CI
+- Gradle 8.13 in CI
+- AGP 8.13.2
+- R8 minification/optimization + resource shrinking
+
+The source itself disables only the `ExpiredTargetSdkVersion` lint check so the legacy target does not block a sideload build.
+
+## Optional stable release signing
+
+Add these GitHub Actions secrets:
+
+- `ANDROID_KEYSTORE_BASE64`
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-When all four are present, the workflow signs the release APK with that key and automatically compiles the signing certificate SHA-256 into the release build. At runtime, a mismatched re-signed/repacked build refuses to enable root DNS interception.
+When configured, the release is signed with your key and its certificate SHA-256 can be compiled into the integrity check. Do not commit your keystore or passwords.
 
-Example for creating a keystore locally:
+## Hardening
 
-```bash
-keytool -genkeypair -v -keystore tommy-release.jks -alias tommy \
-  -keyalg RSA -keysize 3072 -validity 10000
-base64 -w 0 tommy-release.jks
-```
+- R8 shrinking/optimization/identifier obfuscation.
+- Resource shrinking.
+- Class repackaging.
+- Source filename metadata renamed.
+- Test and release APKs are non-debuggable.
+- `allowBackup=false` and cleartext app traffic disabled.
+- Optional signing-certificate self-check for signed release builds.
 
-Do **not** commit the keystore or its passwords to the repository.
-
-## Hardening included
-
-The APK output is hardened as far as a normal Gradle/R8 build can reasonably go without a commercial protector:
-
-- R8 code shrinking, optimization and identifier obfuscation.
-- Resource shrinking + AGP 8.13 optimized resource shrinking.
-- Class repackaging to a short package.
-- Source filename metadata renamed and normal debug logs stripped.
-- Release and test APKs are non-debuggable.
-- Default NextDNS endpoint strings are stored encoded and reconstructed at runtime rather than in `strings.xml`.
-- `allowBackup=false` and cleartext network traffic disabled.
-- Optional release certificate self-check when CI signing is configured.
-
-No Android APK can be made literally impossible to decompile or patch. If the repository is public, anyone already has the original source; use a private repository if source secrecy matters. R8 primarily raises the reverse-engineering cost of the **compiled APK**.
-
-## Compatibility notes
-
-Target environment: rooted Android 7.0/7.1 virtual device. The app itself is Java-only, so the same APK is architecture-independent and does not require separate `armeabi-v7a` or `arm64-v8a` native binaries.
-
-The kernel must provide:
-
-- `su`
-- `iptables` with the `nat` table and `REDIRECT` target
-
-IPv6 interception is best-effort because some Android 7 kernels do not expose IPv6 NAT REDIRECT.
-
-## First test in VPhoneGaGa
-
-1. Install the test or signed release APK.
-2. Open it and press **CHECK ROOT**; approve the root prompt.
-3. Leave the default `49aa48.dns.nextdns.io` value.
-4. Press **ENABLE DNS**.
-5. Wait for status `Protected • IPv4` or `Protected • IPv4 + IPv6`.
-6. Test a browser/app and verify queries from the NextDNS dashboard for profile `49aa48`.
-7. Press **DISABLE** before uninstalling the app.
-
-If `iptables` fails, the virtual kernel may be missing the NAT table or REDIRECT target. IPv6 failure alone is non-fatal; the UI will report IPv4-only protection.
+No Android APK can be made literally impossible to decompile or patch. Keeping the repository private matters more than APK obfuscation if the original source must remain secret.

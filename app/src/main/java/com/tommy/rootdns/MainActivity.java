@@ -2,10 +2,13 @@ package com.tommy.rootdns;
 
 import android.app.Activity;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -18,6 +21,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -25,6 +29,7 @@ public final class MainActivity extends Activity {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private TextView status;
     private TextView root;
+    private TextView diagnostics;
     private EditText endpoint;
     private Switch autoStart;
     private boolean receiverRegistered;
@@ -33,6 +38,7 @@ public final class MainActivity extends Activity {
         @Override public void onReceive(Context context, Intent intent) {
             String message = intent.getStringExtra(RootDnsService.EXTRA_MESSAGE);
             if (message != null) status.setText(message);
+            if (diagnostics != null) diagnostics.setText(AppPrefs.diagnostics(MainActivity.this));
         }
     };
 
@@ -99,6 +105,7 @@ public final class MainActivity extends Activity {
 
         card.addView(label("STATUS"));
         status = text("Idle", 18, Color.WHITE);
+        status.setTextIsSelectable(true);
         card.addView(status, lp(-1, -2, 0, 5, 0, 18));
         card.addView(label("ROOT"));
         root = text("Checking…", 15, Color.rgb(233, 237, 242));
@@ -139,9 +146,25 @@ public final class MainActivity extends Activity {
 
         Button check = button("CHECK ROOT", false);
         check.setOnClickListener(v -> checkRoot());
-        body.addView(check, lp(-1, dp(50), 0, 0, 0, 18));
+        body.addView(check, lp(-1, dp(50), 0, 0, 0, 10));
 
-        TextView note = text("Port 53 traffic is redirected with a dedicated iptables chain. Apps that use their own DoH/DoT, VPN, or hard-coded IPs can bypass standard DNS interception.", 12,
+        Button runDiag = button("RUN DIAGNOSTICS", false);
+        runDiag.setOnClickListener(v -> runDiagnostics());
+        body.addView(runDiag, lp(-1, dp(50), 0, 0, 0, 16));
+
+        LinearLayout diagCard = card();
+        body.addView(diagCard, lp(-1, -2, 0, 0, 0, 10));
+        diagCard.addView(label("DIAGNOSTICS"));
+        diagnostics = text("Not run yet", 10, Color.rgb(192, 199, 209));
+        diagnostics.setTypeface(Typeface.MONOSPACE);
+        diagnostics.setTextIsSelectable(true);
+        diagCard.addView(diagnostics, lp(-1, -2, 0, 8, 0, 8));
+
+        Button copy = button("COPY DIAGNOSTICS", false);
+        copy.setOnClickListener(v -> copyDiagnostics());
+        body.addView(copy, lp(-1, dp(48), 0, 0, 0, 18));
+
+        TextView note = text("v1.1 adds VPhoneGaGa compatibility probing, multiple iptables backends, REDIRECT/DNAT fallback, and exact root/netfilter errors. Apps with their own DoH/DoT, VPN, or hard-coded IPs can still bypass port-53 interception.", 12,
                 Color.rgb(120, 128, 140));
         body.addView(note);
 
@@ -157,6 +180,8 @@ public final class MainActivity extends Activity {
             return;
         }
         AppPrefs.endpoint(this, value.length() == 0 ? DnsEndpointNormalizer.defaultDisplayValue() : value);
+        AppPrefs.diagnostics(this, "Starting enable attempt…");
+        diagnostics.setText(AppPrefs.diagnostics(this));
         status.setText("Starting…");
         Intent intent = new Intent(this, RootDnsService.class);
         intent.setAction(RootDnsService.ACTION_ENABLE);
@@ -174,18 +199,53 @@ public final class MainActivity extends Activity {
         root.setText("Checking…");
         worker.execute(new Runnable() {
             @Override public void run() {
-                final boolean ok = RootShell.hasRoot();
+                final RootShell.Result result = RootShell.run("id", 8000);
+                final boolean ok = result.ok() && result.output.indexOf("uid=0") >= 0;
                 runOnUiThread(new Runnable() {
-                    @Override public void run() { root.setText(ok ? "Granted ✓" : "Not granted"); }
+                    @Override public void run() {
+                        root.setText(ok ? "Granted ✓" : "Not granted");
+                        if (!ok && result.output.length() > 0) {
+                            AppPrefs.diagnostics(MainActivity.this,
+                                    "Root check code=" + result.code + "\n" + result.output);
+                            diagnostics.setText(AppPrefs.diagnostics(MainActivity.this));
+                        }
+                    }
                 });
             }
         });
+    }
+
+    private void runDiagnostics() {
+        diagnostics.setText("Running root/netfilter diagnostics…");
+        status.setText("Diagnosing…");
+        worker.execute(new Runnable() {
+            @Override public void run() {
+                final String result = NetworkDiagnostics.run(MainActivity.this);
+                AppPrefs.diagnostics(MainActivity.this, result);
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        diagnostics.setText(result);
+                        status.setText("Diagnostics complete");
+                    }
+                });
+            }
+        });
+    }
+
+    private void copyDiagnostics() {
+        String value = diagnostics == null ? AppPrefs.diagnostics(this) : diagnostics.getText().toString();
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("TommyRootDNS diagnostics", value));
+            Toast.makeText(this, "Diagnostics copied", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void refresh() {
         if (status != null) status.setText(AppPrefs.status(this));
         if (endpoint != null) endpoint.setText(AppPrefs.endpoint(this));
         if (autoStart != null) autoStart.setChecked(AppPrefs.autoStart(this));
+        if (diagnostics != null) diagnostics.setText(AppPrefs.diagnostics(this));
     }
 
     private LinearLayout card() {
