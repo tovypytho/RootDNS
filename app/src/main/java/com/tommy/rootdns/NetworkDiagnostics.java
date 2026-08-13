@@ -35,6 +35,7 @@ final class NetworkDiagnostics {
 
         out.append('\n').append(TunSupport.diagnostics()).append('\n');
         out.append(IptablesManager.probe(BuildConfig.DNS_PROXY_PORT)).append('\n');
+        out.append('\n').append(RootResolverManager.diagnostics(context)).append('\n');
         out.append("\n=== VPN DNS FALLBACK ===\n");
         out.append("permission: ").append(VpnService.prepare(context) == null ? "granted" : "required").append('\n');
         out.append("tun profiles: ").append(VpnDnsPacket.TUN_IP_TEXT).append("/32 then /24\n");
@@ -42,7 +43,7 @@ final class NetworkDiagnostics {
         out.append("route scope: synthetic DNS server only\n");
         out.append("transport: system DNS UDP/53 -> TUN -> DoH\n");
         out.append("non-DNS traffic: not routed through Tommy VPN\n");
-        out.append("v1.3 MTU: unset by default; 1500 only as last compatibility retry\n");
+        out.append("v1.4 VPN MTU: unset by default; 1500 only as last compatibility retry\n");
         return limit(out.toString(), 24000);
     }
 

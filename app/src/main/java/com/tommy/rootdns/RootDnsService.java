@@ -16,8 +16,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Automatic launcher for the strongest available DNS mode.
- * Root/netfilter interception is preferred when usable; otherwise the app falls
- * back to the DNS-only VpnService implementation.
+ * Root/netfilter interception is preferred when usable. If the virtual kernel has
+ * no netfilter, a root netd/localhost resolver bridge is tried before VPN.
  */
 public final class RootDnsService extends Service {
     static final String ACTION_ENABLE = "com.tommy.rootdns.ENABLE";
@@ -65,6 +65,7 @@ public final class RootDnsService extends Service {
         shuttingDown = true;
         // Root-mode failsafe only. Closing this service never tears down VpnDnsService.
         IptablesManager.disable();
+        RootResolverManager.disable(this);
         engine.stop();
         if (executor != null) executor.shutdownNow();
         super.onDestroy();
@@ -86,8 +87,9 @@ public final class RootDnsService extends Service {
             return;
         }
 
-        // Remove any stale root rules before deciding the mode.
+        // Remove stale interception state before deciding the mode.
         IptablesManager.disable();
+        RootResolverManager.disable(this);
         engine.stop();
 
         publish("Checking root / netfilter…", false, false);
@@ -116,24 +118,37 @@ public final class RootDnsService extends Service {
 
         publish("Trying root DNS interception…", false, false);
         RootShell.Result rules = IptablesManager.enable(getApplicationInfo().uid, BuildConfig.DNS_PROXY_PORT);
-        if (!rules.ok()) {
-            String diagnostic = rules.output + "\n\nAUTO FALLBACK: root/netfilter mode unavailable; trying VPN DNS.";
-            AppPrefs.diagnostics(this, diagnostic);
-            engine.stop();
-            fallbackToVpn("Root iptables/netfilter unavailable.");
+        if (rules.ok()) {
+            AppPrefs.diagnostics(this, rules.output);
+            failedHealthChecks = 0;
+            AppPrefs.active(this, true);
+            AppPrefs.mode(this, AppPrefs.MODE_ROOT);
+            String mode = rules.output.indexOf("IPV6_OK") >= 0 ? "Root IPv4 + IPv6" : "Root IPv4";
+            publish("Protected • " + mode, true, false);
             return;
         }
 
-        AppPrefs.diagnostics(this, rules.output);
-        failedHealthChecks = 0;
-        AppPrefs.active(this, true);
-        AppPrefs.mode(this, AppPrefs.MODE_ROOT);
-        String mode = rules.output.indexOf("IPV6_OK") >= 0 ? "Root IPv4 + IPv6" : "Root IPv4";
-        publish("Protected • " + mode, true, false);
+        String diagnostic = rules.output + "\n\nAUTO FALLBACK: netfilter unavailable; trying Android root resolver mode.";
+        AppPrefs.diagnostics(this, diagnostic);
+        publish("Trying root resolver fallback…", false, false);
+        RootShell.Result resolver = RootResolverManager.enable(this, BuildConfig.DNS_PROXY_PORT);
+        diagnostic += "\n\n" + resolver.output;
+        AppPrefs.diagnostics(this, diagnostic);
+        if (resolver.ok()) {
+            failedHealthChecks = 0;
+            AppPrefs.active(this, true);
+            AppPrefs.mode(this, AppPrefs.MODE_ROOT_RESOLVER);
+            publish("Protected • Root resolver + DoH", true, false);
+            return;
+        }
+
+        engine.stop();
+        fallbackToVpn("Root netfilter/resolver unavailable.");
     }
 
     private void fallbackToVpn(String reason) {
         IptablesManager.disable();
+        RootResolverManager.disable(this);
         engine.stop();
         AppPrefs.active(this, false);
         AppPrefs.mode(this, AppPrefs.MODE_WAITING_VPN);
@@ -144,7 +159,7 @@ public final class RootDnsService extends Service {
             if (before == null || "Not run yet".equals(before)) before = "";
             String note = "AUTO MODE\n" + reason + "\nVPN permission=granted\nstarting DNS-only VPN";
             AppPrefs.diagnostics(this, before.length() == 0 ? note : before + "\n\n" + note);
-            publish("Root NAT unavailable • switching to VPN DNS…", false, false);
+            publish("Root resolver unavailable • switching to VPN DNS…", false, false);
             startVpnService();
             stopForeground(true);
             stopSelf();
@@ -167,12 +182,18 @@ public final class RootDnsService extends Service {
     }
 
     private void watchdog() {
-        if (shuttingDown || !AppPrefs.active(this) ||
-                !AppPrefs.MODE_ROOT.equals(AppPrefs.mode(this))) return;
-        if (!engine.isRunning() || !engine.healthCheck()) {
+        if (shuttingDown || !AppPrefs.active(this)) return;
+        String mode = AppPrefs.mode(this);
+        if (!AppPrefs.MODE_ROOT.equals(mode) && !AppPrefs.MODE_ROOT_RESOLVER.equals(mode)) return;
+
+        boolean healthy = engine.isRunning() && engine.healthCheck();
+        if (healthy && AppPrefs.MODE_ROOT_RESOLVER.equals(mode)) {
+            healthy = RootResolverManager.ensure(this);
+        }
+        if (!healthy) {
             failedHealthChecks++;
             if (failedHealthChecks >= 3) {
-                disable(false, "Failsafe: upstream unavailable; DNS restored");
+                disable(false, "Failsafe: resolver/upstream unavailable; DNS restored");
             }
         } else {
             failedHealthChecks = 0;
@@ -181,8 +202,10 @@ public final class RootDnsService extends Service {
 
     private void disable(boolean userRequested, String message) {
         IptablesManager.disable();
+        RootResolverManager.disable(this);
         engine.stop();
         if (AppPrefs.MODE_ROOT.equals(AppPrefs.mode(this)) ||
+                AppPrefs.MODE_ROOT_RESOLVER.equals(AppPrefs.mode(this)) ||
                 AppPrefs.MODE_WAITING_VPN.equals(AppPrefs.mode(this))) {
             AppPrefs.active(this, false);
             AppPrefs.mode(this, AppPrefs.MODE_OFF);
@@ -196,6 +219,7 @@ public final class RootDnsService extends Service {
 
     private void fail(String message) {
         IptablesManager.disable();
+        RootResolverManager.disable(this);
         engine.stop();
         AppPrefs.active(this, false);
         AppPrefs.mode(this, AppPrefs.MODE_OFF);

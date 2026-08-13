@@ -1,14 +1,18 @@
-TommyRootDNS v1.3.0 generation-time validation
+TommyRootDNS v1.4.0 generation-time validation
 
-[OK] AndroidManifest.xml parsed successfully.
-[OK] app/build.gradle: minSdk 24, targetSdk 28, compileSdk 35, versionCode 4, versionName 1.3.0.
-[OK] VpnService remains protected by android.permission.BIND_VPN_SERVICE.
-[OK] Primary VPN builder no longer forces MTU 32767.
-[OK] VPN compatibility retries: default MTU /32, default MTU /24, MTU 1500 /24.
-[OK] Added /dev/tun, /proc/misc, kernel CONFIG_TUN and /proc/net/dev diagnostics.
-[OK] Added narrow root-assisted /dev/tun recreation only when kernel TUN is detected but the device node is missing.
-[OK] Java source + local Android API-shape stubs compiled with javac source/target 8.
-[OK] DNS VPN packet parser/response helper test passed.
-[OK] GitHub Actions workflow renamed for v1.3 artifacts and retains obfuscated debug/release build.
+[OK] Java source compiled with source/target 8 against local Android API-shape stubs.
+[OK] RootPort53Forwarder UDP/53 relay tested against a local DNS backend on 127.0.0.1:5454.
+[OK] RootPort53Forwarder TCP/53 relay tested against a local DNS backend on 127.0.0.1:5454.
+[OK] AndroidManifest.xml and resource XML parsed successfully.
+[OK] GitHub Actions YAML parsed successfully.
+[OK] versionCode=5 and versionName=1.4.0.
+[OK] R8 keep rule preserves the app_process entry-point class name while the rest of the app remains minified/obfuscated.
+[OK] Workflow outputs v1.4 artifact names and retains optional release signing.
+[OK] Default NextDNS input remains 49aa48.dns.nextdns.io.
 
-Important: this validates project/source consistency in the current environment. The actual Android Gradle Plugin build and VPhoneGaGa runtime behavior must still be tested in GitHub Actions and the target virtual device.
+Not executable in this environment:
+- Real Android netd/ndc resolver override.
+- app_process launch under VPhoneGaGa's root/SELinux domain.
+- Installation on the user's VPhoneGaGa Android 7.1.2 guest.
+
+The v1.4 diagnostics report ndc/app_process/helper failures explicitly so device-specific behavior can be adjusted from the next test.

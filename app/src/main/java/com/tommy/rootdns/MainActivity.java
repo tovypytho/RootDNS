@@ -119,13 +119,17 @@ public final class MainActivity extends Activity {
         TextView wm = text("Tommy", 13, Color.rgb(147, 155, 168));
         wm.setGravity(Gravity.CENTER_HORIZONTAL);
         wm.setLetterSpacing(0.18f);
-        body.addView(wm, lp(-1, -2, 0, 0, 0, 10));
+        body.addView(wm, lp(-1, -2, 0, 0, 0, 2));
+
+        TextView version = text("v" + BuildConfig.VERSION_NAME, 10, Color.rgb(100, 107, 118));
+        version.setGravity(Gravity.CENTER_HORIZONTAL);
+        body.addView(version, lp(-1, -2, 0, 0, 0, 8));
 
         TextView title = text("Root DNS", 30, Color.rgb(244, 246, 248));
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         body.addView(title, lp(-1, -2, 0, 0, 0, 6));
 
-        TextView sub = text("Automatic root DNS → VPN DNS fallback for Android 7+", 13,
+        TextView sub = text("Automatic root DNS → resolver fallback → VPN for Android 7+", 13,
                 Color.rgb(147, 155, 168));
         sub.setGravity(Gravity.CENTER_HORIZONTAL);
         body.addView(sub, lp(-1, -2, 0, 0, 0, 24));
@@ -199,7 +203,7 @@ public final class MainActivity extends Activity {
         copy.setOnClickListener(v -> copyDiagnostics());
         body.addView(copy, lp(-1, dp(48), 0, 0, 0, 18));
 
-        TextView note = text("v1.3 uses automatic root/VPN mode and adds legacy Android TUN compatibility. The VPN fallback now avoids the oversized MTU used in v1.2, retries conservative interface profiles, and diagnoses /dev/tun support. Apps with their own DoH/DoT or hard-coded DNS can still bypass DNS-only VPN mode.", 12,
+        TextView note = text("v1.4 adds a root resolver mode for virtual Android kernels that expose neither netfilter nor TUN. It runs the DoH proxy normally, launches only a tiny localhost:53 bridge as root, and points Android netd at 127.0.0.1. VPN remains the final fallback. Apps with their own DoH/DoT or hard-coded IPs can still bypass the system resolver.", 12,
                 Color.rgb(120, 128, 140));
         body.addView(note);
 
@@ -215,7 +219,7 @@ public final class MainActivity extends Activity {
             return;
         }
         AppPrefs.endpoint(this, value.length() == 0 ? DnsEndpointNormalizer.defaultDisplayValue() : value);
-        AppPrefs.diagnostics(this, "Starting automatic root/VPN enable attempt…");
+        AppPrefs.diagnostics(this, "Starting automatic root/resolver/VPN enable attempt…");
         diagnostics.setText(AppPrefs.diagnostics(this));
         status.setText("Starting automatic mode…");
         Intent intent = new Intent(this, RootDnsService.class);
@@ -320,6 +324,7 @@ public final class MainActivity extends Activity {
         if (mode == null) return;
         String value = AppPrefs.mode(this);
         if (AppPrefs.MODE_ROOT.equals(value)) mode.setText("Root / iptables");
+        else if (AppPrefs.MODE_ROOT_RESOLVER.equals(value)) mode.setText("Root resolver • localhost DoH");
         else if (AppPrefs.MODE_VPN.equals(value)) mode.setText("VPN DNS fallback");
         else if (AppPrefs.MODE_WAITING_VPN.equals(value)) mode.setText("Automatic • waiting for VPN");
         else mode.setText("Automatic");

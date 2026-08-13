@@ -142,7 +142,7 @@ public final class VpnDnsService extends VpnService {
 
         // Android 7's native VPN code throws the generic "Cannot create interface" for
         // failures opening/allocating/activating TUN *and* for SIOCSIFMTU failures. v1.2
-        // forced MTU 32767; v1.3 first leaves MTU unset so Android/kernel picks its default.
+        // forced MTU 32767; the compatibility path first leaves MTU unset so Android/kernel picks its default.
         final int[] prefixes = new int[] { 32, 24, 24 };
         final int[] mtus = new int[] { 0, 0, 1500 };
         final String[] names = new String[] {

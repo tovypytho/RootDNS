@@ -1,11 +1,13 @@
 # Changelog
 
-## 1.3.0
-- Android 7/VPhoneGaGa TUN compatibility pass.
-- Removed primary VPN MTU 32767.
-- Added three VPN establish profiles.
-- Added `/dev/tun` diagnostics and narrow root-assisted repair when kernel TUN exists but the device node is missing.
-- Improved exact VPN establish error logging.
+## 1.4.0
 
-## 1.2.0
-- Added automatic VPN DNS fallback when iptables NAT is unavailable.
+- Added `ROOT_RESOLVER` fallback for Android kernels without netfilter and TUN.
+- Added root `app_process` DNS53 bridge: `127.0.0.1:53 -> 127.0.0.1:5454`.
+- Added active Android network/netId discovery using `ConnectivityManager`.
+- Added netd resolver override and cache flush through `ndc resolver setnetdns`.
+- Added backup/restore for original active-network DNS and legacy `net.dns1/net.dns2` properties.
+- Added resolver watchdog and network re-application.
+- Added root-resolver diagnostics (netId, LinkProperties DNS, `ndc`, `app_process`, helper pid/log, localhost:53 probe).
+- Added visible app version beneath the Tommy watermark.
+- Kept R8 hardening, iptables mode, VPN fallback, and NextDNS default profile.

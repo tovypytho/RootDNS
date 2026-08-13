@@ -15,3 +15,8 @@
     public static int d(...);
     public static int i(...);
 }
+
+# Launched by name through root app_process; keep this one entry point stable.
+-keep class com.tommy.rootdns.RootPort53Forwarder {
+    public static void main(java.lang.String[]);
+}
