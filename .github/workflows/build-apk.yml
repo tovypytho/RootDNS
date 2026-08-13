@@ -42,6 +42,34 @@ jobs:
         with:
           gradle-version: '8.13'
 
+      # TommyRootDNS intentionally keeps targetSdk 28 for its legacy/rooted Android
+      # use case. New AGP lint treats that as fatal even for a sideload-only APK.
+      # Disable ONLY that lint rule during CI; minSdk/targetSdk remain unchanged.
+      - name: Allow legacy targetSdk for sideload build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app/build.gradle")
+          s = p.read_text(encoding="utf-8")
+
+          marker = "disable 'ExpiredTargetSdkVersion'"
+          if marker not in s:
+              needle = "android {"
+              if needle not in s:
+                  raise SystemExit("Could not find android { block in app/build.gradle")
+              replacement = "android {\n    lint {\n        disable 'ExpiredTargetSdkVersion'\n    }"
+              s = s.replace(needle, replacement, 1)
+              p.write_text(s, encoding="utf-8")
+
+          print("Lint override applied:")
+          for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+              if "ExpiredTargetSdkVersion" in line:
+                  print(f"  app/build.gradle:{i}: {line.strip()}")
+          PY
+
       - name: Prepare optional release signing
         shell: bash
         env:
@@ -81,7 +109,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon --stacktrace clean :app:assembleDebug :app:assembleRelease
+          gradle --no-daemon --stacktrace --max-workers=2 \
+            clean :app:assembleDebug :app:assembleRelease
 
       - name: Collect APKs
         shell: bash
@@ -111,6 +140,8 @@ jobs:
             echo "Project: TommyRootDNS"
             echo "Gradle: 8.13"
             echo "Android compile SDK: 35"
+            echo "Android min SDK: 24"
+            echo "Android target SDK: 28"
             echo "Release signing configured: ${SIGNED_RELEASE:-false}"
           } > dist/BUILD-INFO.txt
 
