@@ -1,6 +1,7 @@
 package com.tommy.rootdns;
 
 import android.content.Context;
+import android.net.VpnService;
 import android.os.Build;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -18,7 +19,10 @@ final class NetworkDiagnostics {
         out.append("device=").append(safe(Build.MANUFACTURER)).append(' ')
                 .append(safe(Build.MODEL)).append('\n');
         out.append("abi=").append(abis()).append('\n');
-        out.append("proxy=127.0.0.1:").append(BuildConfig.DNS_PROXY_PORT).append('\n');
+        out.append("activeMode=").append(AppPrefs.mode(context)).append('\n');
+        out.append("vpnPermission=").append(VpnService.prepare(context) == null ? "granted" : "required").append('\n');
+        out.append("vpnDns=").append(VpnDnsPacket.DNS_IP_TEXT).append("/32\n");
+        out.append("rootProxy=127.0.0.1:").append(BuildConfig.DNS_PROXY_PORT).append('\n');
         out.append("endpoint=").append(AppPrefs.endpoint(context)).append("\n\n");
 
         appendCommand(out, "id", RootShell.run("id", 7000));
@@ -30,6 +34,13 @@ final class NetworkDiagnostics {
         appendCommand(out, "ip6 tables", RootShell.run("cat /proc/net/ip6_tables_names 2>/dev/null || true", 7000));
 
         out.append('\n').append(IptablesManager.probe(BuildConfig.DNS_PROXY_PORT)).append('\n');
+        out.append("\n=== VPN DNS FALLBACK ===\n");
+        out.append("permission: ").append(VpnService.prepare(context) == null ? "granted" : "required").append('\n');
+        out.append("tun: ").append(VpnDnsPacket.TUN_IP_TEXT).append("/32\n");
+        out.append("dns: ").append(VpnDnsPacket.DNS_IP_TEXT).append("/32\n");
+        out.append("route scope: synthetic DNS server only\n");
+        out.append("transport: system DNS UDP/53 -> TUN -> DoH\n");
+        out.append("non-DNS traffic: not routed through Tommy VPN\n");
         return limit(out.toString(), 24000);
     }
 

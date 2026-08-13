@@ -4,12 +4,18 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 final class AppPrefs {
+    static final String MODE_OFF = "OFF";
+    static final String MODE_ROOT = "ROOT";
+    static final String MODE_VPN = "VPN";
+    static final String MODE_WAITING_VPN = "WAITING_VPN";
+
     private static final String FILE = "t";
     private static final String K_ENDPOINT = "e";
     private static final String K_AUTO = "a";
     private static final String K_ACTIVE = "x";
     private static final String K_STATUS = "s";
     private static final String K_DIAG = "d";
+    private static final String K_MODE = "m";
 
     private AppPrefs() {}
 
@@ -55,5 +61,13 @@ final class AppPrefs {
 
     static void diagnostics(Context context, String value) {
         p(context).edit().putString(K_DIAG, value == null ? "" : value).apply();
+    }
+
+    static String mode(Context context) {
+        return p(context).getString(K_MODE, MODE_OFF);
+    }
+
+    static void mode(Context context, String value) {
+        p(context).edit().putString(K_MODE, value == null ? MODE_OFF : value).apply();
     }
 }

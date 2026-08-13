@@ -1,88 +1,70 @@
-# Tommy RootDNS v1.1
+# TommyRootDNS 1.2
 
-Minimal rooted Android DNS app for Android 7.0+ (API 24), intended for rooted virtual Android environments such as VPhoneGaGa. The UI keeps the **Tommy** watermark at the top. Default DNS is `49aa48.dns.nextdns.io`, normalized internally to NextDNS DNS-over-HTTPS.
+Minimal Android 7+ DNS-over-HTTPS app designed for rooted virtual Android environments such as VPhoneGaGa.
 
-## v1.1 changes
+## What changed in v1.2
 
-- Exact iptables/root failure text is preserved instead of only showing a numeric code.
-- Added **RUN DIAGNOSTICS** and **COPY DIAGNOSTICS** in the app.
-- Probes root UID, SELinux state, Linux capabilities, ABI, netfilter tables, IPv4 NAT, IPv6 NAT, chain creation, and REDIRECT support.
-- Tries several IPv4 backends: `/system/bin/iptables`, `/system/xbin/iptables`, `/vendor/bin/iptables`, PATH `iptables`, and `busybox iptables`.
-- Same style of fallback probing for `ip6tables`.
-- No longer depends on `xt_owner --uid-owner`; DoH traffic is HTTPS/443 while interception only matches port 53.
-- Uses a dedicated `TOMMY_DNS` chain when possible.
-- If a vendor iptables build can modify OUTPUT but cannot reliably use a custom chain, the app tries exact direct OUTPUT rules.
-- Tries `REDIRECT` first and `DNAT 127.0.0.1:5454` as an IPv4 compatibility fallback.
-- Cleanup removes only TommyRootDNS rules; it never performs a global `iptables -F`.
-- Root-shell output is drained while commands execute to avoid pipe-buffer stalls and is capped before storing diagnostics.
+The tested VPhoneGaGa guest had root and full-looking capabilities, but its kernel exposed no usable iptables `filter` or `nat` tables. A different iptables binary cannot fix a kernel feature that is absent. v1.2 therefore uses **Automatic mode**:
 
-## What it does
+1. Try the existing root DNS53 interception with iptables/netfilter.
+2. If the kernel cannot provide NAT, fall back to an Android `VpnService` DNS-only tunnel.
+3. VPN mode sets a synthetic DNS server (`10.77.0.2`) and routes only that address into the TUN.
+4. Standard Android DNS UDP requests are extracted and sent to the configured DoH endpoint.
+5. Normal web/app traffic is not routed through TommyRootDNS.
 
-1. Requests root using `su`.
-2. Starts a local UDP + TCP DNS proxy on `127.0.0.1:5454`.
-3. Bootstraps the configured DoH hostname before DNS interception is enabled.
-4. Forwards DNS messages over HTTPS/443.
-5. Redirects standard TCP/UDP port 53 traffic to the local proxy using root/netfilter rules.
-6. Keeps a foreground service and watchdog running; if the DoH proxy repeatedly fails, interception is removed so normal DNS is restored.
-7. Optionally starts on boot.
+Default DNS profile:
 
-Apps that use their own DoH/DoT, VPN, or hard-coded destination IPs do not necessarily use port 53 and therefore cannot be guaranteed to pass through this interception.
+`49aa48.dns.nextdns.io`
 
-## VPhoneGaGa diagnostics
+which is normalized internally to the NextDNS DoH endpoint for profile `49aa48`.
 
-If **ENABLE DNS** fails, press **RUN DIAGNOSTICS**. The report includes the actual command result, for example:
+## Important VPN-mode scope
 
-- `Permission denied` / operation not permitted → guest root likely lacks netfilter capability such as `CAP_NET_ADMIN`.
-- `Table does not exist` → the virtual kernel likely does not expose the IPv4/IPv6 NAT table.
-- `not found` → that iptables binary is unavailable; the app will continue trying fallback locations.
-- `No chain/target/match by that name` → a kernel/netfilter target such as `REDIRECT` is missing; v1.1 also tries IPv4 DNAT where appropriate.
+VPN fallback is intentionally DNS-only. It covers apps that use Android's normal resolver, which is the usual system-wide DNS path. Apps that implement their own DoH/DoT, use a separate VPN, connect directly to hard-coded IP addresses, or open direct DNS sockets to unrelated DNS server IPs can bypass this DNS-only design.
 
-The probe chain is never attached to OUTPUT, and is deleted after the test.
+The VPN fallback currently handles IPv4 UDP DNS packets sent to Tommy's synthetic DNS server. IPv6 application traffic is explicitly allowed to remain on the normal network. Large/rare DNS-over-TCP fallback is not implemented in this version.
+
+## Android compatibility
+
+- minSdk: 24 (Android 7.0)
+- targetSdk: 28 (legacy/sideload behavior retained intentionally)
+- compileSdk: 35
+- Java-only APK; no native ABI dependency
+- usable on 32-bit or 64-bit Android guests
 
 ## GitHub Actions build
 
-This ZIP already includes:
+The repository includes:
 
 `.github/workflows/build-apk.yml`
 
-It is designed for GitHub web upload: no local Gradle wrapper is required.
+Upload the project contents to the root of a GitHub repository. Then open **Actions → Build TommyRootDNS APK → Run workflow**.
 
-1. Upload the **contents** of this project to the repository root.
-2. Commit to `main`/`master`, or open **Actions → Build TommyRootDNS APK → Run workflow**.
-3. Download the `TommyRootDNS-apk` artifact.
-4. Without release-signing secrets, install `TommyRootDNS-test-obfuscated.apk`.
+The workflow builds an installable, non-debuggable, minified/obfuscated test APK and an optional release APK.
 
-The project currently uses:
-
-- minSdk 24 (Android 7.0)
-- targetSdk 28 intentionally for this legacy/root sideload use case
-- compileSdk 35
-- JDK 17 in CI
-- Gradle 8.13 in CI
-- AGP 8.13.2
-- R8 minification/optimization + resource shrinking
-
-The source itself disables only the `ExpiredTargetSdkVersion` lint check so the legacy target does not block a sideload build.
-
-## Optional stable release signing
-
-Add these GitHub Actions secrets:
+### Optional release signing secrets
 
 - `ANDROID_KEYSTORE_BASE64`
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-When configured, the release is signed with your key and its certificate SHA-256 can be compiled into the integrity check. Do not commit your keystore or passwords.
+When signing secrets are supplied, the release certificate SHA-256 is compiled into the build for the existing integrity check.
+
+## First run on VPhoneGaGa
+
+1. Install the APK.
+2. Open TommyRootDNS.
+3. Tap **ENABLE DNS**.
+4. Automatic mode tries root/netfilter.
+5. On the known VPhoneGaGa kernel with no NAT tables, Android should display the system VPN connection permission dialog.
+6. Approve it.
+7. Status should become `Protected • VPN DNS`.
+
+Run **RUN DIAGNOSTICS** and copy the result if activation fails.
 
 ## Hardening
 
-- R8 shrinking/optimization/identifier obfuscation.
-- Resource shrinking.
-- Class repackaging.
-- Source filename metadata renamed.
-- Test and release APKs are non-debuggable.
-- `allowBackup=false` and cleartext app traffic disabled.
-- Optional signing-certificate self-check for signed release builds.
+Release/test builds keep R8 optimization, shrinking, class/method renaming, class repackaging, source filename renaming, resource shrinking, non-debuggable builds, no backups, no cleartext traffic, basic debugger detection, package integrity checks, and optional certificate pinning.
 
-No Android APK can be made literally impossible to decompile or patch. Keeping the repository private matters more than APK obfuscation if the original source must remain secret.
+No Android APK can be made literally impossible to reverse engineer; these measures raise the cost of casual decompilation/repacking.

@@ -10,6 +10,8 @@ import android.content.IntentFilter;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.VpnService;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
@@ -26,19 +28,27 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
+    private static final int REQUEST_VPN = 901;
+
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private TextView status;
     private TextView root;
+    private TextView mode;
     private TextView diagnostics;
     private EditText endpoint;
     private Switch autoStart;
     private boolean receiverRegistered;
+    private boolean vpnPromptOpen;
 
     private final BroadcastReceiver updates = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             String message = intent.getStringExtra(RootDnsService.EXTRA_MESSAGE);
             if (message != null) status.setText(message);
+            refreshMode();
             if (diagnostics != null) diagnostics.setText(AppPrefs.diagnostics(MainActivity.this));
+            if (intent.getBooleanExtra(RootDnsService.EXTRA_NEED_VPN, false)) {
+                requestVpnPermission();
+            }
         }
     };
 
@@ -59,6 +69,10 @@ public final class MainActivity extends Activity {
             registerReceiver(updates, new IntentFilter(RootDnsService.ACTION_STATUS));
             receiverRegistered = true;
         }
+        // If the app was left waiting for the system VPN consent dialog, recover cleanly.
+        if (AppPrefs.MODE_WAITING_VPN.equals(AppPrefs.mode(this)) && VpnService.prepare(this) == null) {
+            startVpnService();
+        }
     }
 
     @Override protected void onPause() {
@@ -72,6 +86,22 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         worker.shutdownNow();
         super.onDestroy();
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_VPN) return;
+        vpnPromptOpen = false;
+        if (resultCode == RESULT_OK) {
+            status.setText("VPN permission granted • starting…");
+            startVpnService();
+        } else {
+            AppPrefs.active(this, false);
+            AppPrefs.mode(this, AppPrefs.MODE_OFF);
+            AppPrefs.status(this, "VPN permission denied");
+            status.setText("VPN permission denied");
+            refreshMode();
+        }
     }
 
     private View buildUi() {
@@ -95,7 +125,7 @@ public final class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         body.addView(title, lp(-1, -2, 0, 0, 0, 6));
 
-        TextView sub = text("System-wide DNS53 → DNS-over-HTTPS for rooted Android 7+", 13,
+        TextView sub = text("Automatic root DNS → VPN DNS fallback for Android 7+", 13,
                 Color.rgb(147, 155, 168));
         sub.setGravity(Gravity.CENTER_HORIZONTAL);
         body.addView(sub, lp(-1, -2, 0, 0, 0, 24));
@@ -107,6 +137,11 @@ public final class MainActivity extends Activity {
         status = text("Idle", 18, Color.WHITE);
         status.setTextIsSelectable(true);
         card.addView(status, lp(-1, -2, 0, 5, 0, 18));
+
+        card.addView(label("MODE"));
+        mode = text("Automatic", 15, Color.rgb(233, 237, 242));
+        card.addView(mode, lp(-1, -2, 0, 5, 0, 18));
+
         card.addView(label("ROOT"));
         root = text("Checking…", 15, Color.rgb(233, 237, 242));
         card.addView(root, lp(-1, -2, 0, 5, 0, 0));
@@ -164,7 +199,7 @@ public final class MainActivity extends Activity {
         copy.setOnClickListener(v -> copyDiagnostics());
         body.addView(copy, lp(-1, dp(48), 0, 0, 0, 18));
 
-        TextView note = text("v1.1 adds VPhoneGaGa compatibility probing, multiple iptables backends, REDIRECT/DNAT fallback, and exact root/netfilter errors. Apps with their own DoH/DoT, VPN, or hard-coded IPs can still bypass port-53 interception.", 12,
+        TextView note = text("v1.2 automatically tries root/iptables first. If VPhoneGaGa exposes no netfilter tables, Tommy switches to a DNS-only Android VPN and sends standard system DNS through DoH. Apps that use their own DoH/DoT or direct hard-coded DNS sockets can still bypass DNS-only VPN mode.", 12,
                 Color.rgb(120, 128, 140));
         body.addView(note);
 
@@ -180,19 +215,51 @@ public final class MainActivity extends Activity {
             return;
         }
         AppPrefs.endpoint(this, value.length() == 0 ? DnsEndpointNormalizer.defaultDisplayValue() : value);
-        AppPrefs.diagnostics(this, "Starting enable attempt…");
+        AppPrefs.diagnostics(this, "Starting automatic root/VPN enable attempt…");
         diagnostics.setText(AppPrefs.diagnostics(this));
-        status.setText("Starting…");
+        status.setText("Starting automatic mode…");
         Intent intent = new Intent(this, RootDnsService.class);
         intent.setAction(RootDnsService.ACTION_ENABLE);
-        startService(intent);
+        startCompatService(intent);
     }
 
     private void disableDns() {
         status.setText("Disabling…");
-        Intent intent = new Intent(this, RootDnsService.class);
-        intent.setAction(RootDnsService.ACTION_DISABLE);
-        startService(intent);
+        Intent rootIntent = new Intent(this, RootDnsService.class);
+        rootIntent.setAction(RootDnsService.ACTION_DISABLE);
+        startCompatService(rootIntent);
+
+        Intent vpnIntent = new Intent(this, VpnDnsService.class);
+        vpnIntent.setAction(VpnDnsService.ACTION_STOP);
+        startCompatService(vpnIntent);
+    }
+
+    private void requestVpnPermission() {
+        if (vpnPromptOpen) return;
+        Intent prepare = VpnService.prepare(this);
+        if (prepare == null) {
+            startVpnService();
+            return;
+        }
+        vpnPromptOpen = true;
+        try {
+            startActivityForResult(prepare, REQUEST_VPN);
+        } catch (Throwable e) {
+            vpnPromptOpen = false;
+            status.setText("Could not open VPN permission: " + safe(e.getMessage()));
+        }
+    }
+
+    private void startVpnService() {
+        AppPrefs.mode(this, AppPrefs.MODE_WAITING_VPN);
+        Intent vpn = new Intent(this, VpnDnsService.class);
+        vpn.setAction(VpnDnsService.ACTION_START);
+        startCompatService(vpn);
+    }
+
+    private void startCompatService(Intent intent) {
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent);
+        else startService(intent);
     }
 
     private void checkRoot() {
@@ -203,7 +270,7 @@ public final class MainActivity extends Activity {
                 final boolean ok = result.ok() && result.output.indexOf("uid=0") >= 0;
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
-                        root.setText(ok ? "Granted ✓" : "Not granted");
+                        root.setText(ok ? "Granted ✓" : "Not granted • VPN mode still works");
                         if (!ok && result.output.length() > 0) {
                             AppPrefs.diagnostics(MainActivity.this,
                                     "Root check code=" + result.code + "\n" + result.output);
@@ -216,7 +283,7 @@ public final class MainActivity extends Activity {
     }
 
     private void runDiagnostics() {
-        diagnostics.setText("Running root/netfilter diagnostics…");
+        diagnostics.setText("Running root/netfilter/VPN diagnostics…");
         status.setText("Diagnosing…");
         worker.execute(new Runnable() {
             @Override public void run() {
@@ -246,6 +313,16 @@ public final class MainActivity extends Activity {
         if (endpoint != null) endpoint.setText(AppPrefs.endpoint(this));
         if (autoStart != null) autoStart.setChecked(AppPrefs.autoStart(this));
         if (diagnostics != null) diagnostics.setText(AppPrefs.diagnostics(this));
+        refreshMode();
+    }
+
+    private void refreshMode() {
+        if (mode == null) return;
+        String value = AppPrefs.mode(this);
+        if (AppPrefs.MODE_ROOT.equals(value)) mode.setText("Root / iptables");
+        else if (AppPrefs.MODE_VPN.equals(value)) mode.setText("VPN DNS fallback");
+        else if (AppPrefs.MODE_WAITING_VPN.equals(value)) mode.setText("Automatic • waiting for VPN");
+        else mode.setText("Automatic");
     }
 
     private LinearLayout card() {
@@ -258,43 +335,46 @@ public final class MainActivity extends Activity {
 
     private TextView label(String value) {
         TextView v = text(value, 11, Color.rgb(147, 155, 168));
-        v.setLetterSpacing(0.12f);
+        v.setLetterSpacing(0.14f);
         return v;
     }
 
     private Button button(String value, boolean primary) {
         Button b = new Button(this);
         b.setText(value);
-        b.setTextSize(13);
+        b.setTextSize(14);
         b.setAllCaps(false);
-        b.setTextColor(primary ? Color.rgb(15, 17, 20) : Color.rgb(244, 246, 248));
-        b.setBackground(round(primary ? Color.rgb(233, 237, 242) : Color.rgb(20, 23, 28), dp(12)));
+        b.setTextColor(primary ? Color.rgb(16, 18, 21) : Color.rgb(239, 242, 246));
+        b.setBackground(round(primary ? Color.rgb(230, 235, 242) : Color.rgb(20, 23, 28), dp(12)));
         return b;
     }
 
     private TextView text(String value, int sp, int color) {
-        TextView t = new TextView(this);
-        t.setText(value);
-        t.setTextSize(sp);
-        t.setTextColor(color);
-        t.setLineSpacing(0, 1.08f);
-        return t;
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextSize(sp);
+        v.setTextColor(color);
+        return v;
     }
 
-    private GradientDrawable round(int color, float radius) {
+    private LinearLayout.LayoutParams lp(int width, int height, int l, int t, int r, int b) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(width, height);
+        p.setMargins(dp(l), dp(t), dp(r), dp(b));
+        return p;
+    }
+
+    private GradientDrawable round(int color, int radius) {
         GradientDrawable d = new GradientDrawable();
         d.setColor(color);
         d.setCornerRadius(radius);
         return d;
     }
 
-    private LinearLayout.LayoutParams lp(int w, int h, int l, int t, int r, int b) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
-        p.setMargins(dp(l), dp(t), dp(r), dp(b));
-        return p;
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
+    private static String safe(String value) {
+        return value == null || value.length() == 0 ? "unknown error" : value;
     }
 }
