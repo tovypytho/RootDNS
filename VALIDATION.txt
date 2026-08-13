@@ -1,0 +1,9 @@
+Generation-time validation
+==========================
+
+- Pure-Java DNS/root core compiled successfully with javac -source 8 -target 8.
+- AndroidManifest.xml and all resource XML files parsed successfully.
+- GitHub Actions workflow YAML parsed successfully.
+- Default endpoint normalization verified:
+    49aa48.dns.nextdns.io -> https://dns.nextdns.io/49aa48
+- Full Android/AGP APK build was not run in the generation container because that container does not include an Android SDK. The included GitHub Actions workflow installs/uses the required CI toolchain and is the intended full build environment.

@@ -1,0 +1,77 @@
+plugins {
+    id 'com.android.application'
+}
+
+def ksPath = System.getenv('ANDROID_KEYSTORE_PATH') ?: ''
+def ksStorePass = System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: ''
+def ksAlias = System.getenv('ANDROID_KEY_ALIAS') ?: ''
+def ksKeyPass = System.getenv('ANDROID_KEY_PASSWORD') ?: ''
+def expectedCert = (System.getenv('EXPECTED_CERT_SHA256') ?: '').replace(':', '').toLowerCase()
+
+def q = { String s -> '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"' }
+
+android {
+    namespace 'com.tommy.rootdns'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.tommy.rootdns'
+        minSdk 24
+        targetSdk 28
+        versionCode 1
+        versionName '1.0.0'
+
+        buildConfigField 'int', 'DNS_PROXY_PORT', '5454'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        ciRelease {
+            if (!ksPath.isEmpty()) {
+                storeFile file(ksPath)
+                storePassword ksStorePass
+                keyAlias ksAlias
+                keyPassword ksKeyPass
+                v1SigningEnabled true
+                v2SigningEnabled true
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // This test APK is installable but intentionally non-debuggable and minified.
+            debuggable false
+            minifyEnabled true
+            shrinkResources true
+            buildConfigField 'String', 'EXPECTED_CERT_SHA256', q('')
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+
+        release {
+            debuggable false
+            minifyEnabled true
+            shrinkResources true
+            buildConfigField 'String', 'EXPECTED_CERT_SHA256', q(expectedCert)
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+
+            if (!ksPath.isEmpty()) {
+                signingConfig signingConfigs.ciRelease
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    packagingOptions {
+        resources {
+            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*']
+        }
+    }
+}
