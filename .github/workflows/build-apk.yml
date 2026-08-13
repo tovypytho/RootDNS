@@ -1,39 +1,46 @@
-name: Build APK
+name: Build TommyRootDNS APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.13'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
 
-      - name: Ensure Android SDK 35
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.13'
 
       - name: Prepare optional release signing
         shell: bash
@@ -44,22 +51,30 @@ jobs:
           KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+
           if [[ -n "${KS_B64}" && -n "${KS_PASS}" && -n "${KS_ALIAS}" && -n "${KEY_PASS}" ]]; then
             mkdir -p .ci
             printf '%s' "${KS_B64}" | base64 --decode > .ci/release.jks
+
             echo "ANDROID_KEYSTORE_PATH=${GITHUB_WORKSPACE}/.ci/release.jks" >> "$GITHUB_ENV"
             echo "ANDROID_KEYSTORE_PASSWORD=${KS_PASS}" >> "$GITHUB_ENV"
             echo "ANDROID_KEY_ALIAS=${KS_ALIAS}" >> "$GITHUB_ENV"
             echo "ANDROID_KEY_PASSWORD=${KEY_PASS}" >> "$GITHUB_ENV"
 
-            CERT_SHA=$(keytool -exportcert -alias "${KS_ALIAS}" -keystore .ci/release.jks -storepass "${KS_PASS}" \
-              | openssl dgst -sha256 | awk '{print $2}')
+            CERT_SHA="$({
+              keytool -exportcert \
+                -alias "${KS_ALIAS}" \
+                -keystore .ci/release.jks \
+                -storepass "${KS_PASS}"
+            } | openssl dgst -sha256 | awk '{print $2}')"
+
             echo "EXPECTED_CERT_SHA256=${CERT_SHA}" >> "$GITHUB_ENV"
             echo "SIGNED_RELEASE=true" >> "$GITHUB_ENV"
-            echo "Release signing: enabled"
+            echo "Release signing enabled."
           else
             echo "SIGNED_RELEASE=false" >> "$GITHUB_ENV"
-            echo "Release signing secrets not set. Debug APK will still be installable; release APK will be unsigned."
+            echo "Release signing secrets are not configured."
+            echo "The obfuscated test APK will still be generated."
           fi
 
       - name: Build obfuscated APKs
@@ -68,30 +83,44 @@ jobs:
           set -euo pipefail
           gradle --no-daemon --stacktrace clean :app:assembleDebug :app:assembleRelease
 
-      - name: Collect artifacts
+      - name: Collect APKs
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/TommyRootDNS-test-obfuscated.apk
+
+          if [[ -f app/build/outputs/apk/debug/app-debug.apk ]]; then
+            cp app/build/outputs/apk/debug/app-debug.apk \
+              dist/TommyRootDNS-test-obfuscated.apk
+          fi
 
           if [[ -f app/build/outputs/apk/release/app-release.apk ]]; then
-            cp app/build/outputs/apk/release/app-release.apk dist/TommyRootDNS-release-signed.apk
+            cp app/build/outputs/apk/release/app-release.apk \
+              dist/TommyRootDNS-release-signed.apk
           elif [[ -f app/build/outputs/apk/release/app-release-unsigned.apk ]]; then
-            cp app/build/outputs/apk/release/app-release-unsigned.apk dist/TommyRootDNS-release-unsigned.apk
+            cp app/build/outputs/apk/release/app-release-unsigned.apk \
+              dist/TommyRootDNS-release-unsigned.apk
+          fi
+
+          if ! compgen -G "dist/*.apk" > /dev/null; then
+            echo "No APK was produced."
+            exit 1
           fi
 
           {
-            echo "Build type: R8 minified + resource shrinking"
+            echo "Project: TommyRootDNS"
+            echo "Gradle: 8.13"
+            echo "Android compile SDK: 35"
             echo "Release signing configured: ${SIGNED_RELEASE:-false}"
-            echo "The test APK is installable and non-debuggable, but its ephemeral debug signing key may change between GitHub runs."
-            echo "For stable upgrades, configure the four ANDROID_KEYSTORE_* repository secrets described in README.md."
           } > dist/BUILD-INFO.txt
 
           sha256sum dist/*.apk > dist/SHA256SUMS.txt
 
+          echo "Generated files:"
+          ls -lh dist/
+
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: TommyRootDNS-apk
           path: dist/
