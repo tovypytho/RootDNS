@@ -101,15 +101,15 @@ jobs:
 
           if [[ -f app/build/outputs/apk/debug/app-debug.apk ]]; then
             cp app/build/outputs/apk/debug/app-debug.apk \
-              dist/TommyRootDNS-v1.2-test-obfuscated.apk
+              dist/TommyRootDNS-v1.3-test-obfuscated.apk
           fi
 
           if [[ -f app/build/outputs/apk/release/app-release.apk ]]; then
             cp app/build/outputs/apk/release/app-release.apk \
-              dist/TommyRootDNS-v1.2-release-signed.apk
+              dist/TommyRootDNS-v1.3-release-signed.apk
           elif [[ -f app/build/outputs/apk/release/app-release-unsigned.apk ]]; then
             cp app/build/outputs/apk/release/app-release-unsigned.apk \
-              dist/TommyRootDNS-v1.2-release-unsigned.apk
+              dist/TommyRootDNS-v1.3-release-unsigned.apk
           fi
 
           if ! compgen -G "dist/*.apk" > /dev/null; then
@@ -119,7 +119,7 @@ jobs:
 
           {
             echo "Project: TommyRootDNS"
-            echo "Version: 1.2.0 (3)"
+            echo "Version: 1.3.0 (4)"
             echo "Gradle: 8.13"
             echo "Android compile SDK: 35"
             echo "Android min SDK: 24"
@@ -134,7 +134,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v6
         with:
-          name: TommyRootDNS-v1.2-apk
+          name: TommyRootDNS-v1.3-apk
           path: dist/
           if-no-files-found: error
           retention-days: 30
