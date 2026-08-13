@@ -199,7 +199,7 @@ public final class MainActivity extends Activity {
         copy.setOnClickListener(v -> copyDiagnostics());
         body.addView(copy, lp(-1, dp(48), 0, 0, 0, 18));
 
-        TextView note = text("v1.2 automatically tries root/iptables first. If VPhoneGaGa exposes no netfilter tables, Tommy switches to a DNS-only Android VPN and sends standard system DNS through DoH. Apps that use their own DoH/DoT or direct hard-coded DNS sockets can still bypass DNS-only VPN mode.", 12,
+        TextView note = text("v1.3 uses automatic root/VPN mode and adds legacy Android TUN compatibility. The VPN fallback now avoids the oversized MTU used in v1.2, retries conservative interface profiles, and diagnoses /dev/tun support. Apps with their own DoH/DoT or hard-coded DNS can still bypass DNS-only VPN mode.", 12,
                 Color.rgb(120, 128, 140));
         body.addView(note);
 

@@ -6,11 +6,9 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
-import android.system.OsConstants;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -112,21 +110,11 @@ public final class VpnDnsService extends VpnService {
         }
 
         try {
-            Builder builder = new Builder()
-                    .setSession("Tommy DNS")
-                    .setMtu(32767)
-                    .addAddress(VpnDnsPacket.TUN_IP_TEXT, 32)
-                    .addRoute(VpnDnsPacket.DNS_IP_TEXT, 32)
-                    .addDnsServer(VpnDnsPacket.DNS_IP_TEXT)
-                    .allowFamily(OsConstants.AF_INET6)
-                    .setBlocking(true);
-            try {
-                // Keep the DoH transport outside this DNS-only VPN explicitly.
-                builder.addDisallowedApplication(getPackageName());
-            } catch (PackageManager.NameNotFoundException ignored) {
-            }
+            String repair = TunSupport.repairIfSafe();
+            appendDiagnostics(repair);
 
-            tun = builder.establish();
+            EstablishResult established = establishCompatibleTun();
+            tun = established.tun;
             if (tun == null) throw new IOException("VPN establish returned null");
             input = new FileInputStream(tun.getFileDescriptor());
             output = new FileOutputStream(tun.getFileDescriptor());
@@ -136,14 +124,70 @@ public final class VpnDnsService extends VpnService {
             AppPrefs.active(this, true);
             AppPrefs.mode(this, AppPrefs.MODE_VPN);
             appendDiagnostics("VPN mode established\n" +
-                    "tun=" + VpnDnsPacket.TUN_IP_TEXT + "/32\n" +
+                    "profile=" + established.profile + "\n" +
+                    "tun=" + VpnDnsPacket.TUN_IP_TEXT + "/" + established.prefix + "\n" +
                     "dns=" + VpnDnsPacket.DNS_IP_TEXT + "/32\n" +
                     "route=DNS-only\n" +
                     "endpoint=" + AppPrefs.endpoint(this));
             publish("Protected • VPN DNS", true);
             packetLoop();
         } catch (Throwable e) {
-            fail("VPN start failed: " + safe(e.getMessage()));
+            appendDiagnostics("VPN establish final failure: " + e.getClass().getSimpleName() + ": " + safe(e.getMessage()) + "\n" + TunSupport.diagnostics());
+            fail("VPN start failed: " + safe(e.getMessage()) + " • see diagnostics");
+        }
+    }
+
+    private EstablishResult establishCompatibleTun() throws IOException {
+        Throwable last = null;
+
+        // Android 7's native VPN code throws the generic "Cannot create interface" for
+        // failures opening/allocating/activating TUN *and* for SIOCSIFMTU failures. v1.2
+        // forced MTU 32767; v1.3 first leaves MTU unset so Android/kernel picks its default.
+        final int[] prefixes = new int[] { 32, 24, 24 };
+        final int[] mtus = new int[] { 0, 0, 1500 };
+        final String[] names = new String[] {
+                "legacy-default-mtu-/32",
+                "legacy-default-mtu-/24",
+                "legacy-mtu1500-/24"
+        };
+
+        for (int i = 0; i < names.length; i++) {
+            try {
+                Builder builder = new Builder()
+                        .setSession("Tommy DNS")
+                        .addAddress(VpnDnsPacket.TUN_IP_TEXT, prefixes[i])
+                        .addRoute(VpnDnsPacket.DNS_IP_TEXT, 32)
+                        .addDnsServer(VpnDnsPacket.DNS_IP_TEXT)
+                        .setBlocking(true);
+                if (mtus[i] > 0) builder.setMtu(mtus[i]);
+
+                ParcelFileDescriptor pfd = builder.establish();
+                if (pfd != null) {
+                    appendDiagnostics("VPN establish success: " + names[i]);
+                    return new EstablishResult(pfd, names[i], prefixes[i]);
+                }
+                appendDiagnostics("VPN establish returned null: " + names[i]);
+            } catch (Throwable e) {
+                last = e;
+                appendDiagnostics("VPN establish failed [" + names[i] + "]: " +
+                        e.getClass().getSimpleName() + ": " + safe(e.getMessage()));
+            }
+        }
+
+        if (last instanceof IOException) throw (IOException) last;
+        if (last != null) throw new IOException(last.getClass().getSimpleName() + ": " + safe(last.getMessage()), last);
+        throw new IOException("Cannot establish VPN interface");
+    }
+
+    private static final class EstablishResult {
+        final ParcelFileDescriptor tun;
+        final String profile;
+        final int prefix;
+
+        EstablishResult(ParcelFileDescriptor tun, String profile, int prefix) {
+            this.tun = tun;
+            this.profile = profile;
+            this.prefix = prefix;
         }
     }
 

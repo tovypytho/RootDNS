@@ -1,27 +1,14 @@
-TommyRootDNS v1.2.0 generation-time validation
-==============================================
+TommyRootDNS v1.3.0 generation-time validation
 
-Validated in the current build environment:
+[OK] AndroidManifest.xml parsed successfully.
+[OK] app/build.gradle: minSdk 24, targetSdk 28, compileSdk 35, versionCode 4, versionName 1.3.0.
+[OK] VpnService remains protected by android.permission.BIND_VPN_SERVICE.
+[OK] Primary VPN builder no longer forces MTU 32767.
+[OK] VPN compatibility retries: default MTU /32, default MTU /24, MTU 1500 /24.
+[OK] Added /dev/tun, /proc/misc, kernel CONFIG_TUN and /proc/net/dev diagnostics.
+[OK] Added narrow root-assisted /dev/tun recreation only when kernel TUN is detected but the device node is missing.
+[OK] Java source + local Android API-shape stubs compiled with javac source/target 8.
+[OK] DNS VPN packet parser/response helper test passed.
+[OK] GitHub Actions workflow renamed for v1.3 artifacts and retains obfuscated debug/release build.
 
-[OK] Project structure contains Gradle root, app module, AndroidManifest, resources, source and GitHub Actions workflow.
-[OK] app/build.gradle: minSdk 24, targetSdk 28, compileSdk 35, versionCode 3, versionName 1.2.0.
-[OK] AndroidManifest XML parses successfully.
-[OK] All Android resource XML files parse successfully.
-[OK] GitHub Actions YAML parses successfully.
-[OK] All Java application sources compile as Java 8 against API-shaped Android compile stubs (syntax/type-shape validation).
-[OK] Pure Java DNS/DoH/VPN packet classes compile with javac -source 8 -target 8.
-[OK] Synthetic IPv4 UDP DNS query parsing test passes.
-[OK] Synthetic UDP DNS response construction test passes.
-[OK] Independently verified IPv4 header and UDP pseudo-header checksums on generated DNS replies.
-[OK] NextDNS hostname normalization test: 49aa48.dns.nextdns.io -> https://dns.nextdns.io/49aa48.
-[OK] VpnService manifest entry includes BIND_VPN_SERVICE and android.net.VpnService intent filter.
-[OK] VPN mode uses a DNS-only route to 10.77.0.2/32 and explicitly allows IPv6 traffic to fall through to the underlying network.
-[OK] Root/iptables implementation and v1.1 diagnostics remain present as Automatic mode's first choice.
-[OK] R8 minification/optimization/resource shrinking and optional release signing/integrity pinning remain enabled.
-[OK] GitHub Actions includes JDK 17, Android SDK 35, Gradle 8.13, build retry and artifact upload.
-
-Not validated here:
-
-- No real Android SDK/device/emulator is available in this local container, so the final AGP APK build is expected to be performed by the included GitHub Actions workflow.
-- The Android VPN consent UI and VPhoneGaGa's exact VPN/TUN behavior must be tested on the target virtual device.
-- VPN fallback is intentionally DNS-only and currently handles standard IPv4 UDP DNS directed to Tommy's synthetic VPN DNS server. DNS-over-TCP and apps with embedded DoH/DoT/direct hard-coded DNS sockets are outside this version's interception path.
+Important: this validates project/source consistency in the current environment. The actual Android Gradle Plugin build and VPhoneGaGa runtime behavior must still be tested in GitHub Actions and the target virtual device.
