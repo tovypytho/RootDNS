@@ -138,7 +138,10 @@ public final class RootDnsService extends Service {
             failedHealthChecks = 0;
             AppPrefs.active(this, true);
             AppPrefs.mode(this, AppPrefs.MODE_ROOT_RESOLVER);
-            publish("Protected • Root resolver + DoH", true, false);
+            String rm = AppPrefs.resolverStrategy(this);
+            if ("properties".equals(rm)) publish("Protected • Legacy DNS properties + DoH", true, false);
+            else if ("legacy-iface".equals(rm)) publish("Protected • Legacy interface resolver + DoH", true, false);
+            else publish("Protected • Root resolver + DoH", true, false);
             return;
         }
 
@@ -151,8 +154,20 @@ public final class RootDnsService extends Service {
         RootResolverManager.disable(this);
         engine.stop();
         AppPrefs.active(this, false);
-        AppPrefs.mode(this, AppPrefs.MODE_WAITING_VPN);
 
+        if (TunSupport.definitelyUnavailable()) {
+            AppPrefs.mode(this, AppPrefs.MODE_OFF);
+            String before = AppPrefs.diagnostics(this);
+            if (before == null || "Not run yet".equals(before)) before = "";
+            String note = "AUTO MODE\n" + reason + "\nVPN skipped: kernel TUN driver not detected";
+            AppPrefs.diagnostics(this, before.length() == 0 ? note : before + "\n\n" + note);
+            publish("No compatible DNS backend yet • TUN unavailable", false, false);
+            stopForeground(true);
+            stopSelf();
+            return;
+        }
+
+        AppPrefs.mode(this, AppPrefs.MODE_WAITING_VPN);
         Intent permission = VpnService.prepare(this);
         if (permission == null) {
             String before = AppPrefs.diagnostics(this);

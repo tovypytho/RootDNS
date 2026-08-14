@@ -88,6 +88,12 @@ public final class VpnDnsService extends VpnService {
             return;
         }
 
+        if (TunSupport.definitelyUnavailable()) {
+            appendDiagnostics("VPN skipped: /dev/tun absent and kernel TUN driver not registered");
+            fail("VPN unavailable: kernel has no TUN driver");
+            return;
+        }
+
         String endpoint;
         try {
             endpoint = DnsEndpointNormalizer.normalize(AppPrefs.endpoint(this));

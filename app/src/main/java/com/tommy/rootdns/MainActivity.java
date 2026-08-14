@@ -203,7 +203,7 @@ public final class MainActivity extends Activity {
         copy.setOnClickListener(v -> copyDiagnostics());
         body.addView(copy, lp(-1, dp(48), 0, 0, 0, 18));
 
-        TextView note = text("v1.4 adds a root resolver mode for virtual Android kernels that expose neither netfilter nor TUN. It runs the DoH proxy normally, launches only a tiny localhost:53 bridge as root, and points Android netd at 127.0.0.1. VPN remains the final fallback. Apps with their own DoH/DoT or hard-coded IPs can still bypass the system resolver.", 12,
+        TextView note = text("v1.5 adds a legacy resolver path for virtual Android builds where ConnectivityManager exposes no netId. It starts the root localhost:53 bridge first, detects the default interface from the route table, tries netd per-network and legacy interface commands, then falls back to net.dns properties with DNS-cache invalidation. VPN is skipped when the kernel definitively has no TUN driver.", 12,
                 Color.rgb(120, 128, 140));
         body.addView(note);
 

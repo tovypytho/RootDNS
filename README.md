@@ -1,30 +1,20 @@
-# TommyRootDNS v1.4.0
+# TommyRootDNS v1.5
 
-Rooted Android 7+ DNS-over-HTTPS utility, designed for virtual Android environments such as VPhoneGaGa.
+Root/system DNS-over-HTTPS controller intended for Android 7+ and constrained virtual Android environments.
 
-## Automatic mode order
+Default endpoint: `49aa48.dns.nextdns.io` (normalized to NextDNS DoH).
 
-1. **Root + iptables/netfilter** — strongest port-53 interception when kernel NAT is available.
-2. **Root resolver mode** — for kernels with no netfilter/TUN. Tommy starts its normal DoH proxy on `127.0.0.1:5454`, launches a very small root `app_process` bridge on `127.0.0.1:53`, and points Android's active netd resolver at `127.0.0.1`.
-3. **DNS-only VpnService** — final fallback when Android TUN is available.
+Automatic mode order:
 
-Default NextDNS profile: `49aa48.dns.nextdns.io`.
+1. Root iptables/netfilter interception when kernel NAT is usable.
+2. Root resolver bridge: local DNS53 as root -> app DoH proxy.
+   - Android per-network `setnetdns` when a netId can be resolved.
+   - legacy interface resolver commands when supported.
+   - legacy `net.dns*` system-property mode for virtual/vendor stacks that expose DNS only through properties.
+3. DNS-only `VpnService` when TUN is available.
 
-## VPhoneGaGa motivation
+On kernels proven to have no TUN driver, v1.5 does not waste time retrying VPN.
 
-The tested Android 7.1.2 environment reports root and broad capabilities, but exposes neither iptables tables nor `/dev/tun`. v1.4 therefore adds a resolver path that does not require either kernel feature.
+## Build
 
-## GitHub Actions
-
-Upload the entire project to a GitHub repository. The workflow at `.github/workflows/build-apk.yml` builds minified/obfuscated APKs automatically on pushes to `main`/`master` and can also be run manually.
-
-For stable release upgrades, configure the same Android signing key in GitHub Actions secrets:
-
-- `ANDROID_KEYSTORE_BASE64`
-- `ANDROID_KEYSTORE_PASSWORD`
-- `ANDROID_KEY_ALIAS`
-- `ANDROID_KEY_PASSWORD`
-
-## Important limitation
-
-Root resolver mode changes Android's system resolver for the active network. Apps that implement their own DoH/DoT, use hard-coded IP addresses, or bypass Android's libc/netd resolver are outside that path.
+Push the project to GitHub. `.github/workflows/build-apk.yml` builds minified/obfuscated APK artifacts. The project intentionally keeps `minSdk 24` and a legacy target behavior for sideload/root use.

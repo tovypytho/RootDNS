@@ -1,13 +1,14 @@
 # Changelog
 
-## 1.4.0
+## 1.5.0
 
-- Added `ROOT_RESOLVER` fallback for Android kernels without netfilter and TUN.
-- Added root `app_process` DNS53 bridge: `127.0.0.1:53 -> 127.0.0.1:5454`.
-- Added active Android network/netId discovery using `ConnectivityManager`.
-- Added netd resolver override and cache flush through `ndc resolver setnetdns`.
-- Added backup/restore for original active-network DNS and legacy `net.dns1/net.dns2` properties.
-- Added resolver watchdog and network re-application.
-- Added root-resolver diagnostics (netId, LinkProperties DNS, `ndc`, `app_process`, helper pid/log, localhost:53 probe).
-- Added visible app version beneath the Tommy watermark.
-- Kept R8 hardening, iptables mode, VPN fallback, and NextDNS default profile.
+- Root resolver no longer requires `ConnectivityManager.getActiveNetwork()` to succeed.
+- Starts the root localhost:53 bridge before resolver/network detection.
+- Detects Android 7 default `netId` from `dumpsys connectivity` when public APIs return null.
+- Detects default interface from `/proc/net/route` / `ip route`.
+- Resolver strategy order: `ndc resolver setnetdns`, legacy `setifdns`/`setdefaultif`, then `net.dns1/net.dns2` properties.
+- Property fallback increments `net.dnschange` and broadcasts `CLEAR_DNS_CACHE`.
+- Saves/restores resolver strategy, interface, DNS properties, and DNS-change counter.
+- Skips VPN fallback when `/dev/tun` is absent and `/proc/misc` confirms no TUN driver.
+- More detailed resolver diagnostics: route table, connectivity dump head, `ndc resolver` probe, helper status/log.
+- Version visible in UI: v1.5.0.

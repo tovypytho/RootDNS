@@ -1,18 +1,32 @@
-TommyRootDNS v1.4.0 generation-time validation
+TommyRootDNS v1.5 validation
+============================
 
-[OK] Java source compiled with source/target 8 against local Android API-shape stubs.
-[OK] RootPort53Forwarder UDP/53 relay tested against a local DNS backend on 127.0.0.1:5454.
-[OK] RootPort53Forwarder TCP/53 relay tested against a local DNS backend on 127.0.0.1:5454.
-[OK] AndroidManifest.xml and resource XML parsed successfully.
-[OK] GitHub Actions YAML parsed successfully.
-[OK] versionCode=5 and versionName=1.4.0.
-[OK] R8 keep rule preserves the app_process entry-point class name while the rest of the app remains minified/obfuscated.
-[OK] Workflow outputs v1.4 artifact names and retains optional release signing.
-[OK] Default NextDNS input remains 49aa48.dns.nextdns.io.
+Version
+- versionCode: 6
+- versionName: 1.5.0
+- minSdk: 24
+- targetSdk: 28 (intentional sideload/root compatibility target)
 
-Not executable in this environment:
-- Real Android netd/ndc resolver override.
-- app_process launch under VPhoneGaGa's root/SELinux domain.
-- Installation on the user's VPhoneGaGa Android 7.1.2 guest.
+Changes validated
+- Root resolver starts localhost:53 bridge before requiring an Android netId.
+- Resolver discovers netId via ConnectivityManager then Android 7 dumpsys connectivity.
+- Default interface discovery uses /proc/net/route with ip route fallback.
+- Resolver strategy order: setnetdns -> legacy setifdns/setdefaultif -> net.dns property fallback.
+- net.dns fallback bumps net.dnschange and sends CLEAR_DNS_CACHE broadcast.
+- Resolver backup/restore includes strategy, interface, DNS props and dnschange.
+- Restore is guarded by an explicit backup marker to avoid clearing DNS on a fresh start.
+- VPN is skipped only when /dev/tun is absent and readable /proc/misc positively contains no TUN driver.
 
-The v1.4 diagnostics report ndc/app_process/helper failures explicitly so device-specific behavior can be adjusted from the next test.
+Static checks
+- Java source compile-check against local Android API-shape stubs: PASS
+  (javac source/target 8; only expected deprecation/obsolete source-level warnings)
+- AndroidManifest/res XML parse: PASS
+- GitHub Actions YAML parse: PASS
+
+DNS53 bridge smoke test
+- UDP 127.0.0.1:53 -> 127.0.0.1:5454: PASS
+- TCP 127.0.0.1:53 -> 127.0.0.1:5454: PASS
+
+Runtime note
+- Full Android Gradle APK build and VPhoneGaGa runtime behavior must still be validated by GitHub Actions + the target Android 7 virtual environment.
+- v1.5 specifically targets the observed VPhoneGaGa state where net.dns1/net.dns2 exist but ConnectivityManager reports no active netId, while netfilter and TUN are unavailable.

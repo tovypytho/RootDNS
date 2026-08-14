@@ -22,6 +22,10 @@ final class AppPrefs {
     private static final String K_R_DOM = "ro";
     private static final String K_R_P1 = "r1";
     private static final String K_R_P2 = "r2";
+    private static final String K_R_IF = "ri";
+    private static final String K_R_CH = "rc";
+    private static final String K_R_STRAT = "rs";
+    private static final String K_R_HAS = "rh";
 
     private AppPrefs() {}
 
@@ -77,13 +81,17 @@ final class AppPrefs {
         p(context).edit().putString(K_MODE, value == null ? MODE_OFF : value).apply();
     }
 
-    static void resolverBackup(Context context, int netId, String dns, String domains, String prop1, String prop2) {
+    static void resolverBackup(Context context, int netId, String dns, String domains, String prop1, String prop2, String iface, String dnsChange, String strategy) {
         p(context).edit()
                 .putInt(K_R_NET, netId)
                 .putString(K_R_DNS, dns == null ? "" : dns)
                 .putString(K_R_DOM, domains == null ? "" : domains)
                 .putString(K_R_P1, prop1 == null ? "" : prop1)
                 .putString(K_R_P2, prop2 == null ? "" : prop2)
+                .putString(K_R_IF, iface == null ? "" : iface)
+                .putString(K_R_CH, dnsChange == null ? "" : dnsChange)
+                .putString(K_R_STRAT, strategy == null ? "" : strategy)
+                .putBoolean(K_R_HAS, true)
                 .apply();
     }
 
@@ -92,10 +100,16 @@ final class AppPrefs {
     static String resolverDomains(Context context) { return p(context).getString(K_R_DOM, ""); }
     static String resolverProp1(Context context) { return p(context).getString(K_R_P1, ""); }
     static String resolverProp2(Context context) { return p(context).getString(K_R_P2, ""); }
+    static String resolverIface(Context context) { return p(context).getString(K_R_IF, ""); }
+    static String resolverDnsChange(Context context) { return p(context).getString(K_R_CH, ""); }
+    static String resolverStrategy(Context context) { return p(context).getString(K_R_STRAT, ""); }
+    static boolean resolverHasBackup(Context context) { return p(context).getBoolean(K_R_HAS, false); }
+    static void resolverStrategy(Context context, String value) { p(context).edit().putString(K_R_STRAT, value == null ? "" : value).apply(); }
 
     static void clearResolverBackup(Context context) {
         p(context).edit()
                 .remove(K_R_NET).remove(K_R_DNS).remove(K_R_DOM).remove(K_R_P1).remove(K_R_P2)
+                .remove(K_R_IF).remove(K_R_CH).remove(K_R_STRAT).remove(K_R_HAS)
                 .apply();
     }
 }

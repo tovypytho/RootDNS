@@ -1,8 +1,29 @@
 package com.tommy.rootdns;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+
 /** Root-assisted diagnostics/repair for legacy Android VPN TUN device exposure. */
 final class TunSupport {
     private TunSupport() {}
+
+    /** True only when we can positively see that this kernel has no TUN device/driver. */
+    static boolean definitelyUnavailable() {
+        try {
+            if (new File("/dev/tun").exists()) return false;
+            BufferedReader br = new BufferedReader(new FileReader("/proc/misc"));
+            try {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    if (line.trim().matches(".*\\btun$")) return false;
+                }
+            } finally { br.close(); }
+            return true;
+        } catch (Throwable ignored) {
+            return false; // unknown: retain the compatibility attempt
+        }
+    }
 
     static String diagnostics() {
         StringBuilder out = new StringBuilder();
