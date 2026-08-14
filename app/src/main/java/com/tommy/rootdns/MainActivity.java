@@ -203,7 +203,7 @@ public final class MainActivity extends Activity {
         copy.setOnClickListener(v -> copyDiagnostics());
         body.addView(copy, lp(-1, dp(48), 0, 0, 0, 18));
 
-        TextView note = text("v1.7 replaces the fragile app_process port-53 bridge with a tiny native ARM64/ARMv7 root helper, validates the app-side 5454 proxy before bridging, parses the real eth0/default network from dumpsys/route data, and rejects netd 5xx replies. The persistent root session from v1.6 remains, so Superuser-granted toast spam stays suppressed.", 12,
+        TextView note = text("v1.8 adapts to this VPhoneGaGa network stack: Android still sends normal UDP/TCP DNS to localhost:53, but the native root bridge now carries both paths to Tommy over the proven TCP DNS listener on 127.0.0.1:5454. A broken app-side UDP/5454 path no longer blocks resolver mode. Persistent root sessions remain enabled to avoid Superuser toast spam.", 12,
                 Color.rgb(120, 128, 140));
         body.addView(note);
 

@@ -73,49 +73,81 @@ typedef struct {
     socklen_t client_len;
 } udp_job_t;
 
+static int query_backend_tcp(const unsigned char *query, size_t query_len,
+                             unsigned char *answer, size_t answer_cap, size_t *answer_len) {
+    if (!query || query_len < 12 || query_len > 65535 || !answer || answer_cap < 12 || !answer_len) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    int upstream = socket(AF_INET, SOCK_STREAM, 0);
+    if (upstream < 0) return -1;
+    set_timeout(upstream, 15);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)g_target_port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(upstream, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(upstream);
+        return -1;
+    }
+
+    unsigned char hdr[2];
+    hdr[0] = (unsigned char)((query_len >> 8) & 0xffu);
+    hdr[1] = (unsigned char)(query_len & 0xffu);
+    if (write_exact(upstream, hdr, 2) != 2 || write_exact(upstream, query, query_len) != (ssize_t)query_len) {
+        close(upstream);
+        return -1;
+    }
+
+    if (read_exact(upstream, hdr, 2) != 2) {
+        close(upstream);
+        return -1;
+    }
+    size_t len = (size_t)(((uint16_t)hdr[0] << 8) | hdr[1]);
+    if (len < 12 || len > answer_cap) {
+        close(upstream);
+        errno = EMSGSIZE;
+        return -1;
+    }
+    if (read_exact(upstream, answer, len) != (ssize_t)len) {
+        close(upstream);
+        return -1;
+    }
+
+    close(upstream);
+    *answer_len = len;
+    return 0;
+}
+
 static void *udp_worker(void *arg) {
     udp_job_t *job = (udp_job_t *)arg;
-    int fd = -1;
     if (!job) return NULL;
 
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        log_errno("udp upstream socket");
-        free(job);
-        return NULL;
-    }
-    set_timeout(fd, 12);
-
-    struct sockaddr_in upstream;
-    memset(&upstream, 0, sizeof(upstream));
-    upstream.sin_family = AF_INET;
-    upstream.sin_port = htons((uint16_t)g_target_port);
-    inet_pton(AF_INET, "127.0.0.1", &upstream.sin_addr);
-
-    if (sendto(fd, job->query, job->len, 0, (struct sockaddr *)&upstream, sizeof(upstream)) < 0) {
-        log_errno("udp send to 127.0.0.1 backend");
-        close(fd);
-        free(job);
-        return NULL;
-    }
-
+    /*
+     * v1.8 deliberately translates client UDP/53 into DNS-over-TCP toward the
+     * app proxy. VPhoneGaGa diagnostics proved 127.0.0.1:5454 TCP works while
+     * its Java UDP path can miss replies. Android resolvers still get normal
+     * UDP/53 semantics on the front side; only the localhost bridge transport
+     * is changed.
+     */
     unsigned char answer[65535];
-    ssize_t n = recvfrom(fd, answer, sizeof(answer), 0, NULL, NULL);
-    if (n < 0) {
-        log_errno("udp receive from 127.0.0.1 backend");
-        close(fd);
+    size_t answer_len = 0;
+    if (query_backend_tcp(job->query, job->len, answer, sizeof(answer), &answer_len) != 0) {
+        log_errno("udp client -> tcp backend query");
         free(job);
         return NULL;
     }
 
     if (g_running && g_udp_fd >= 0) {
-        if (sendto(g_udp_fd, answer, (size_t)n, 0,
+        if (sendto(g_udp_fd, answer, answer_len, 0,
                    (struct sockaddr *)&job->client, job->client_len) < 0) {
             log_errno("udp reply to DNS client");
         }
     }
 
-    close(fd);
     free(job);
     return NULL;
 }
@@ -275,7 +307,7 @@ int main(int argc, char **argv) {
         return 21;
     }
 
-    fprintf(stdout, "READY native pid=%d udp=127.0.0.1:53 tcp=127.0.0.1:53 target=127.0.0.1:%d\n",
+    fprintf(stdout, "READY native pid=%d udp=127.0.0.1:53 tcp=127.0.0.1:53 target=127.0.0.1:%d backend=tcp\n",
             (int)getpid(), g_target_port);
     fflush(stdout);
 

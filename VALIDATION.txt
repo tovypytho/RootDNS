@@ -1,54 +1,45 @@
-TommyRootDNS v1.7 validation
+TommyRootDNS v1.8 validation
 ============================
 
 Project metadata
-- versionCode: 8
-- versionName: 1.7.0
+- versionCode: 9
+- versionName: 1.8.0
 - minSdk: 24 (Android 7.0)
 - targetSdk: 28
 - compileSdk: 35
-- universal ARM APK helper ABIs: arm64-v8a + armeabi-v7a
+- native helper ABIs: arm64-v8a + armeabi-v7a
 
 Diagnosis used for this release
-- The tested VPhoneGaGa exposes Android default network netId 100 and DNS servers 180.250.245.142 / 180.250.245.133 through dumpsys.
-- Kernel iptables filter/nat tables remain unavailable.
-- Kernel TUN driver/device remains unavailable.
-- v1.5 successfully spawned an app_process helper PID but localhost:53 did not answer and the helper log was empty.
-- This strongly isolates the next failure to the privileged port-53 bridge rather than netId discovery or the upstream DoH health check.
+- Supplied v1.7 VPhoneGaGa log reports active netId=100.
+- Default interface is eth0.
+- Original DNS servers are 180.250.245.142 and 180.250.245.133.
+- iptables NAT remains unavailable.
+- kernel TUN remains unavailable.
+- Crucially, the app proxy reports: backend 127.0.0.1:5454 UDP=FAIL TCP=OK.
+- v1.7 therefore aborted before starting the root bridge.
 
-v1.7 fixes
-- Replaces app_process as the primary port-53 bridge with a tiny native C helper.
-- GitHub Actions compiles the helper with Android NDK 26.3 for arm64-v8a and armeabi-v7a.
-- AndroidManifest forces native libraries to be extracted so the selected ABI helper is available through nativeLibraryDir.
-- App stages the packaged helper when possible; persistent root copies it to /data/local/tmp/tommy_dns53 and chmods it 0755.
-- Helper binds UDP + TCP 127.0.0.1:53 and forwards to 127.0.0.1:5454.
-- Helper emits READY/pid/bind/forwarding errors to /data/local/tmp/tommy_dns53.log.
-- App verifies the ordinary 5454 DNS proxy over UDP/TCP before attempting the root bridge.
-- App separately probes localhost:53 over UDP/TCP after helper startup.
-- Default interface is parsed from the active dumpsys network block or /proc/net/route in Java; no dependency on awk. This addresses the previous false `default iface=sh:` result.
-- netd command validation rejects 5xx replies even if the ndc process exits with code 0.
-- TUN unavailability is checked through the persistent root session, so a confirmed no-TUN kernel skips futile VPN startup attempts.
-- Persistent su session from v1.6 is retained to suppress repeated Superuser-granted toast spam.
+v1.8 fix
+- Root resolver mode no longer requires UDP/5454.
+- TCP/5454 is the required backend health check.
+- Native helper keeps UDP+TCP listeners on 127.0.0.1:53 for Android compatibility.
+- UDP/53 queries are encapsulated using the standard 2-byte DNS-over-TCP length prefix and sent to 127.0.0.1:5454 over TCP.
+- The TCP DNS response is unpacked and returned as a normal UDP response to the Android resolver.
+- TCP/53 requests continue to relay to TCP/5454.
+- This isolates the app-side Java UDP problem without changing Android's resolver-facing protocol.
 
 Local checks performed
-- native/rootdns53.c compiled with host GCC using -Wall -Wextra -Werror.
-- Native helper smoke test passed:
-  * helper bound 127.0.0.1:53;
-  * UDP DNS query was relayed to mock 127.0.0.1:5454 and returned;
-  * TCP DNS query was relayed to mock 127.0.0.1:5454 and returned.
-- RootResolverManager.java + RootShell.java + TunSupport.java compiled with Java 8 source/target against minimal Android/project stubs.
-- AndroidManifest.xml and all resource XML files parsed successfully.
-- GitHub Actions YAML parsed successfully.
-- Workflow installs NDK 26.3 and compiles both ARM helper variants before Gradle/R8 build.
+- native/rootdns53.c compiled with host GCC using -std=c11 -Wall -Wextra -Werror.
+- End-to-end mock test passed with a backend that exposed TCP only:
+  * UDP client -> 127.0.0.1:53 -> native bridge -> TCP backend -> UDP response: PASS.
+  * TCP client -> 127.0.0.1:53 -> native bridge -> TCP backend -> TCP response: PASS.
+- Native READY output reports backend=tcp.
+- Android XML files parse successfully.
+- GitHub workflow remains web-upload-friendly and compiles ARM64/ARMv7 helper with NDK 26.3 before Gradle/R8.
 
-What must still be verified on VPhoneGaGa
-- Whether SELinux permits the root helper copied to /data/local/tmp to bind localhost port 53.
-- Whether the root helper can reach the app-owned 127.0.0.1:5454 socket.
-- Whether `ndc resolver setnetdns 100 '' 127.0.0.1` is accepted by this vendor netd after the bridge is healthy.
-
-Expected useful diagnostics after install
-- backend 127.0.0.1:5454 UDP=OK TCP=OK
-- helper start: ... backend=native ... alive=yes ... READY native ...
+Expected next VPhoneGaGa diagnostics
+- backend 127.0.0.1:5454 UDP=FAIL TCP=OK
+- bridge backend transport=TCP (UDP/53 clients are translated to TCP/5454)
+- helper start: backend=native ... READY native ... backend=tcp
 - localhost:53 UDP=OK TCP=OK
-- default iface=eth0 (expected from the supplied dumpsys)
-- setnetdns[100]: 2xx on success, or an explicit netd 5xx/error if rejected
+- setnetdns[100]: a 2xx success or an explicit netd error
+- ROOT_RESOLVER_OK on success

@@ -18,8 +18,9 @@ import java.util.regex.Pattern;
 /**
  * Root resolver fallback for virtual Android builds without usable netfilter/TUN.
  *
- * v1.7 supports Android 5-7 per-network netd/property resolver stacks and uses a
- * native root DNS53 helper because app_process is unreliable in this virtual Android.
+ * v1.8 supports Android 5-7 per-network netd/property resolver stacks and uses a
+ * native root DNS53 helper. UDP clients on port 53 are translated to the app proxy's
+ * proven TCP DNS listener, avoiding vendor-specific loss on the Java UDP backend.
  */
 final class RootResolverManager {
     private static final String PID = "/data/local/tmp/tommy_dns53.pid";
@@ -54,23 +55,24 @@ final class RootResolverManager {
 
         // Prove the ordinary app-side proxy is answering before inserting the privileged
         // port-53 bridge. This isolates DoH/proxy failures from root-helper failures.
-        boolean backendUdp = probeDnsUdp(proxyPort, 8000);
-        boolean backendTcp = probeDnsTcp(proxyPort, 8000);
+        boolean backendUdp = probeDnsUdp(proxyPort, 1500);
+        boolean backendTcp = probeDnsTcp(proxyPort, 15000);
         out.append("backend 127.0.0.1:").append(proxyPort)
                 .append(" UDP=").append(backendUdp ? "OK" : "FAIL")
                 .append(" TCP=").append(backendTcp ? "OK" : "FAIL").append('\n');
-        if (!backendUdp) {
-            return new RootShell.Result(41, out.append("ERROR: app DNS proxy did not answer before root bridge").toString());
+        out.append("bridge backend transport=TCP (UDP/53 clients are translated to TCP/5454)\n");
+        if (!backendTcp) {
+            return new RootShell.Result(41, out.append("ERROR: app DNS proxy TCP listener did not answer before root bridge").toString());
         }
 
-        // Start localhost:53 before requiring a netId. v1.7 uses a tiny NDK-built native
+        // Start localhost:53 before requiring a netId. v1.8 uses a tiny NDK-built native
         // helper instead of app_process; some virtual Android builds allow a root native
         // executable from /data/local/tmp but silently kill/deny app_process loading APK dex.
         RootShell.Result helper = startHelper(context, proxyPort);
         out.append("helper start: code=").append(helper.code).append(" • ")
                 .append(oneLine(helper.output)).append('\n');
-        boolean localUdp = probeDnsUdp(53, 10000);
-        boolean localTcp = probeDnsTcp(53, 10000);
+        boolean localUdp = probeDnsUdp(53, 15000);
+        boolean localTcp = probeDnsTcp(53, 15000);
         out.append("localhost:53 UDP=").append(localUdp ? "OK" : "FAIL")
                 .append(" TCP=").append(localTcp ? "OK" : "FAIL").append('\n');
         if (!localUdp) {
@@ -161,8 +163,9 @@ final class RootResolverManager {
         RootShell.Result log = RootShell.run("tail -n 20 " + LOG + " 2>/dev/null || true", 4000);
         out.append("helper log: ").append(valueOrNone(oneLine(log.output))).append('\n');
         out.append("backend 127.0.0.1:").append(BuildConfig.DNS_PROXY_PORT)
-                .append(" UDP=").append(probeDnsUdp(BuildConfig.DNS_PROXY_PORT, 6000) ? "OK" : "FAIL")
-                .append(" TCP=").append(probeDnsTcp(BuildConfig.DNS_PROXY_PORT, 6000) ? "OK" : "FAIL").append('\n');
+                .append(" UDP=").append(probeDnsUdp(BuildConfig.DNS_PROXY_PORT, 1500) ? "OK" : "FAIL")
+                .append(" TCP=").append(probeDnsTcp(BuildConfig.DNS_PROXY_PORT, 12000) ? "OK" : "FAIL").append('\n');
+        out.append("bridge backend transport: TCP\n");
         out.append("localhost:53 UDP=").append(probeDnsUdp(53, 8000) ? "OK" : "FAIL")
                 .append(" TCP=").append(probeDnsTcp(53, 8000) ? "OK" : "FAIL").append('\n');
         out.append("strategy order: setnetdns -> legacy interface resolver -> net.dns properties\n");
