@@ -76,6 +76,20 @@ final class RootShell {
         }
     }
 
+    /**
+     * Deliberately asks the root manager for a fresh `su -c` execution domain.
+     * Most commands should use the persistent session above to avoid toast spam.
+     * This special path is used only when a privileged bind is denied from the
+     * persistent shell: some vendor root managers keep `su -c sh` in a restricted
+     * shell SELinux domain but execute a direct `su -c <binary>` in their privileged
+     * root domain. At most one extra root-manager toast should be produced per enable.
+     */
+    static Result runFreshSu(String command, long timeoutMs) {
+        synchronized (LOCK) {
+            return runOneShot(command, timeoutMs);
+        }
+    }
+
     /** Primarily useful for tests/process teardown; normal app flow intentionally keeps root alive. */
     static void close() {
         synchronized (LOCK) {

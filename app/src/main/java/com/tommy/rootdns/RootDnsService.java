@@ -25,6 +25,7 @@ public final class RootDnsService extends Service {
     static final String ACTION_STATUS = "com.tommy.rootdns.STATUS";
     static final String EXTRA_MESSAGE = "m";
     static final String EXTRA_NEED_VPN = "need_vpn";
+    static final String EXTRA_NEED_COMPAT = "need_compat";
     private static final String CHANNEL = "tdns";
     private static final int NOTIFICATION_ID = 4172;
 
@@ -146,7 +147,31 @@ public final class RootDnsService extends Service {
         }
 
         engine.stop();
+        if (resolver.output != null && resolver.output.indexOf("Extreme compatibility is OFF") >= 0
+                && TunSupport.definitelyUnavailable()) {
+            requestCompatibilityApproval();
+            return;
+        }
         fallbackToVpn("Root netfilter/resolver unavailable.");
+    }
+
+
+    private void requestCompatibilityApproval() {
+        IptablesManager.disable();
+        RootResolverManager.disable(this);
+        engine.stop();
+        AppPrefs.active(this, false);
+        AppPrefs.mode(this, AppPrefs.MODE_OFF);
+        String before = AppPrefs.diagnostics(this);
+        if (before == null || "Not run yet".equals(before)) before = "";
+        String note = "AUTO MODE\nVendor SELinux blocked localhost DNS port 53. " +
+                "Safer execution/policy/transient-bind paths were exhausted.\n" +
+                "VPN is unavailable because this kernel has no TUN driver.\n" +
+                "User approval is required before Tommy may keep SELinux Permissive while DNS is active.";
+        AppPrefs.diagnostics(this, before.length() == 0 ? note : before + "\n\n" + note);
+        publish("VPhoneGaGa SELinux blocks DNS port 53 • approval required", false, false, true);
+        stopForeground(true);
+        stopSelf();
     }
 
     private void fallbackToVpn(String reason) {
@@ -244,6 +269,10 @@ public final class RootDnsService extends Service {
     }
 
     private void publish(String message, boolean active, boolean needVpn) {
+        publish(message, active, needVpn, false);
+    }
+
+    private void publish(String message, boolean active, boolean needVpn, boolean needCompat) {
         AppPrefs.status(this, message);
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null) nm.notify(NOTIFICATION_ID, notification(message));
@@ -252,6 +281,7 @@ public final class RootDnsService extends Service {
         update.putExtra(EXTRA_MESSAGE, message);
         update.putExtra("active", active);
         update.putExtra(EXTRA_NEED_VPN, needVpn);
+        update.putExtra(EXTRA_NEED_COMPAT, needCompat);
         update.putExtra("mode", AppPrefs.mode(this));
         sendBroadcast(update);
     }

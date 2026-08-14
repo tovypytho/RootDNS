@@ -18,9 +18,10 @@ import java.util.regex.Pattern;
 /**
  * Root resolver fallback for virtual Android builds without usable netfilter/TUN.
  *
- * v1.8 supports Android 5-7 per-network netd/property resolver stacks and uses a
- * native root DNS53 helper. UDP clients on port 53 are translated to the app proxy's
- * proven TCP DNS listener, avoiding vendor-specific loss on the Java UDP backend.
+ * v1.9 supports Android 5-7 per-network netd/property resolver stacks and uses a
+ * SELinux-aware native root DNS53 helper. It tries several privileged execution paths
+ * before considering the optional last-resort permissive compatibility mode. UDP clients
+ * on port 53 are translated to the app proxy's proven TCP DNS listener.
  */
 final class RootResolverManager {
     private static final String PID = "/data/local/tmp/tommy_dns53.pid";
@@ -65,21 +66,41 @@ final class RootResolverManager {
             return new RootShell.Result(41, out.append("ERROR: app DNS proxy TCP listener did not answer before root bridge").toString());
         }
 
-        // Start localhost:53 before requiring a netId. v1.8 uses a tiny NDK-built native
-        // helper instead of app_process; some virtual Android builds allow a root native
-        // executable from /data/local/tmp but silently kill/deny app_process loading APK dex.
+        // Start localhost:53 before touching Android resolver state. v1.9 is intentionally
+        // defensive because vendor root managers may grant uid=0 while keeping the long-lived
+        // root shell in a SELinux domain that cannot bind dns_port. startHelper() therefore
+        // tries: normal persistent root -> fresh su execution domain -> narrow live policy
+        // repair (when a supported policy tool exists) -> momentary permissive bind with
+        // immediate re-enforce. No persistent SELinux downgrade happens automatically.
         RootShell.Result helper = startHelper(context, proxyPort);
         out.append("helper start: code=").append(helper.code).append(" • ")
                 .append(oneLine(helper.output)).append('\n');
-        boolean localUdp = probeDnsUdp(53, 15000);
-        boolean localTcp = probeDnsTcp(53, 15000);
+        boolean localUdp = probeDnsUdp(53, 12000);
+        boolean localTcp = probeDnsTcp(53, 12000);
         out.append("localhost:53 UDP=").append(localUdp ? "OK" : "FAIL")
                 .append(" TCP=").append(localTcp ? "OK" : "FAIL").append('\n');
-        if (!localUdp) {
-            out.append("ERROR: localhost:53 bridge did not answer DNS\n");
+
+        if ((!localUdp || !localTcp) && AppPrefs.extremeCompatibility(context)) {
+            out.append("safe bind paths exhausted; Extreme compatibility is enabled\n");
+            RootShell.Result extreme = startHelperExtreme(context, proxyPort);
+            out.append("extreme helper start: code=").append(extreme.code).append(" • ")
+                    .append(oneLine(extreme.output)).append('\n');
+            localUdp = probeDnsUdp(53, 12000);
+            localTcp = probeDnsTcp(53, 12000);
+            out.append("localhost:53 after extreme compatibility UDP=")
+                    .append(localUdp ? "OK" : "FAIL").append(" TCP=")
+                    .append(localTcp ? "OK" : "FAIL").append('\n');
+        }
+
+        if (!localUdp || !localTcp) {
+            out.append("ERROR: localhost:53 bridge did not answer both UDP and TCP DNS\n");
+            if (!AppPrefs.extremeCompatibility(context)) {
+                out.append("Extreme compatibility is OFF. It is intentionally opt-in because it may keep SELinux Permissive while DNS is active.\n");
+            }
             RootShell.Result details = RootShell.run("cat " + LOG + " 2>/dev/null || true", 4000);
             if (details.output.length() > 0) out.append(details.output).append('\n');
             stopHelper();
+            restoreSelinux(context);
             return new RootShell.Result(43, out.toString());
         }
         out.append("localhost:53 DNS bridge=OK\n");
@@ -89,6 +110,7 @@ final class RootResolverManager {
         if (!applied.ok) {
             restore(context);
             stopHelper();
+            restoreSelinux(context);
             return new RootShell.Result(44, out.append("ERROR: no compatible Android resolver override worked").toString());
         }
 
@@ -101,7 +123,12 @@ final class RootResolverManager {
     static void disable(Context context) {
         restore(context);
         stopHelper();
+        restoreSelinux(context);
         AppPrefs.clearResolverBackup(context);
+    }
+
+    static void emergencyRestoreSecurity(Context context) {
+        restoreSelinux(context);
     }
 
     static boolean ensure(Context context) {
@@ -131,6 +158,10 @@ final class RootResolverManager {
     static String diagnostics(Context context) {
         StringBuilder out = new StringBuilder();
         out.append("=== ROOT RESOLVER FALLBACK ===\n");
+        RootShell.Result se = RootShell.run("echo mode=$(getenforce 2>/dev/null || echo Unknown); echo ctx=$(cat /proc/$$/attr/current 2>/dev/null || echo unknown); for p in magiskpolicy supolicy /sbin/magiskpolicy /sbin/supolicy /data/adb/magisk/magiskpolicy; do command -v \"$p\" 2>/dev/null || [ -x \"$p\" ] && echo \"$p\"; done", 5000);
+        out.append("SELinux/root context: ").append(valueOrNone(oneLine(se.output))).append('\n');
+        out.append("extreme compatibility: ").append(AppPrefs.extremeCompatibility(context) ? "enabled" : "disabled").append('\n');
+        out.append("SELinux relaxed by Tommy: ").append(AppPrefs.selinuxRelaxed(context) ? "yes" : "no").append('\n');
         ResolverState s = currentState(context);
         out.append("network source: ").append(valueOrNone(s.source)).append('\n');
         out.append("active netId: ").append(s.netId <= 0 ? "unavailable" : Integer.toString(s.netId)).append('\n');
@@ -162,6 +193,8 @@ final class RootResolverManager {
         out.append("helper process: ").append(valueOrNone(oneLine(pid.output))).append('\n');
         RootShell.Result log = RootShell.run("tail -n 20 " + LOG + " 2>/dev/null || true", 4000);
         out.append("helper log: ").append(valueOrNone(oneLine(log.output))).append('\n');
+        RootShell.Result avc = recentAvc();
+        out.append("recent AVC: ").append(valueOrNone(oneLine(avc.output))).append('\n');
         out.append("backend 127.0.0.1:").append(BuildConfig.DNS_PROXY_PORT)
                 .append(" UDP=").append(probeDnsUdp(BuildConfig.DNS_PROXY_PORT, 1500) ? "OK" : "FAIL")
                 .append(" TCP=").append(probeDnsTcp(BuildConfig.DNS_PROXY_PORT, 12000) ? "OK" : "FAIL").append('\n');
@@ -176,6 +209,7 @@ final class RootResolverManager {
 
     private static RootShell.Result startHelper(Context context, int proxyPort) {
         stopHelper();
+        restoreSelinux(context);
 
         String nativeDir = context.getApplicationInfo().nativeLibraryDir;
         String packaged = nativeDir == null ? "" : nativeDir + "/libtdns53.so";
@@ -183,10 +217,105 @@ final class RootResolverManager {
             return new RootShell.Result(42, "nativeLibraryDir unavailable");
         }
         String staged = stageNativeHelper(context, packaged);
+        String prep = nativeStartCommand(packaged, staged, proxyPort);
+        StringBuilder log = new StringBuilder();
 
+        RootShell.Result direct = RootShell.run(prep, 14000);
+        log.append("attempt[persistent-root]: code=").append(direct.code).append(" • ")
+                .append(oneLine(direct.output)).append('\n');
+        if (direct.ok()) return new RootShell.Result(0, log.toString());
+
+        boolean bindDenied = isBindPermissionDenied(direct.output);
+        if (bindDenied) {
+            // A fresh su can run in a different SELinux domain than `su -c sh` on vendor roots.
+            // It costs at most one extra root-manager grant toast, but only on this EACCES path.
+            stopHelper();
+            RootShell.Result fresh = RootShell.runFreshSu(prep, 14000);
+            log.append("attempt[fresh-su-domain]: code=").append(fresh.code).append(" • ")
+                    .append(oneLine(fresh.output)).append('\n');
+            if (fresh.ok()) return new RootShell.Result(0, log.toString());
+
+            // If Magisk/SuperSU exposes a live policy tool, repair only the DNS-port bind
+            // permissions for the current root domain rather than disabling SELinux globally.
+            RootShell.Result patch = tryLivePolicyPatch(direct.output + "\n" + fresh.output);
+            log.append("attempt[narrow-sepolicy-repair]: code=").append(patch.code).append(" • ")
+                    .append(oneLine(patch.output)).append('\n');
+            if (patch.ok()) {
+                stopHelper();
+                RootShell.Result afterPatch = RootShell.run(prep, 14000);
+                log.append("attempt[after-policy-repair]: code=").append(afterPatch.code).append(" • ")
+                        .append(oneLine(afterPatch.output)).append('\n');
+                if (afterPatch.ok()) return new RootShell.Result(0, log.toString());
+            }
+
+            // Last safe automatic attempt: disable enforcing only long enough for bind()/listen()
+            // to complete, then immediately restore Enforcing before returning to app code.
+            // If ongoing traffic is permitted after the socket exists, no persistent downgrade
+            // is needed. The caller probes UDP+TCP after Enforcing has already been restored.
+            stopHelper();
+            RootShell.Result transientBind = RootShell.run(transientPermissiveStartCommand(prep), 18000);
+            log.append("attempt[transient-permissive-bind]: code=").append(transientBind.code).append(" • ")
+                    .append(oneLine(transientBind.output)).append('\n');
+            if (transientBind.ok()) return new RootShell.Result(0, log.toString());
+        }
+
+        // app_process remains useful only when the native executable itself cannot run. It is
+        // intentionally NOT used to mask an SELinux dns_port denial, because it inherits a
+        // similarly restricted domain on this virtual Android and only adds noise.
+        if (!bindDenied && direct.output.indexOf("START native") < 0) {
+            RootShell.Result old = startAppProcessFallback(context, proxyPort);
+            log.append("attempt[app_process-exec-fallback]: code=").append(old.code).append(" • ")
+                    .append(oneLine(old.output)).append('\n');
+            if (old.ok()) return new RootShell.Result(0, log.toString());
+        }
+
+        RootShell.Result avc = recentAvc();
+        log.append("recent AVC: ").append(oneLine(avc.output)).append('\n');
+        return new RootShell.Result(42, log.toString());
+    }
+
+    private static RootShell.Result startHelperExtreme(Context context, int proxyPort) {
+        stopHelper();
+        String nativeDir = context.getApplicationInfo().nativeLibraryDir;
+        String packaged = nativeDir == null ? "" : nativeDir + "/libtdns53.so";
+        if (packaged.length() == 0) return new RootShell.Result(62, "nativeLibraryDir unavailable");
+        String staged = stageNativeHelper(context, packaged);
+        String prep = nativeStartCommand(packaged, staged, proxyPort);
+        int appPid = android.os.Process.myPid();
+
+        RootShell.Result current = RootShell.run("getenforce 2>/dev/null || echo Unknown", 4000);
+        String mode = clean(current.output);
+        boolean changed = "Enforcing".equalsIgnoreCase(mode);
+        if (changed) {
+            RootShell.Result relax = RootShell.run("setenforce 0 2>&1; rc=$?; echo mode=$(getenforce 2>/dev/null); exit $rc", 5000);
+            if (!relax.ok() || oneLine(relax.output).toLowerCase().indexOf("permissive") < 0) {
+                return new RootShell.Result(63, "cannot enter Permissive: " + relax.output);
+            }
+            AppPrefs.selinuxRelaxed(context, true);
+        }
+
+        RootShell.Result started = RootShell.run(prep, 14000);
+        if (!started.ok()) {
+            if (changed) restoreSelinux(context);
+            return new RootShell.Result(started.code, "Permissive helper failed: " + started.output);
+        }
+
+        if (changed) {
+            // Root watchdog is independent of the APK process. If either Tommy's app process or
+            // the DNS helper disappears unexpectedly, it kills the helper and restores Enforcing.
+            String watchdog =
+                    "hp=$(cat " + quote(PID) + " 2>/dev/null); " +
+                    "( while [ -d /proc/" + appPid + " ] && [ -n \"$hp\" ] && kill -0 \"$hp\" 2>/dev/null; do sleep 2; done; " +
+                    "[ -n \"$hp\" ] && kill \"$hp\" 2>/dev/null || true; setenforce 1 2>/dev/null || true ) >/dev/null 2>&1 &";
+            RootShell.run(watchdog, 4000);
+        }
+        return new RootShell.Result(0, "SELinux mode before=" + valueOrNone(mode) + " kept=Permissive while active; " + started.output);
+    }
+
+    private static String nativeStartCommand(String packaged, String staged, int proxyPort) {
         String qsrc = quote(packaged);
         String qstage = staged.length() == 0 ? "''" : quote(staged);
-        String prep =
+        return
                 "rm -f " + quote(BIN) + " " + quote(PID) + " " + quote(LOG) + "; " +
                 "src=" + qsrc + "; if [ ! -r \"$src\" ] && [ -n " + qstage + " ] && [ -r " + qstage + " ]; then src=" + qstage + "; fi; " +
                 "if [ ! -r \"$src\" ]; then echo 'native helper source unreadable'; echo packaged=" + qsrc + "; echo staged=" + qstage + "; exit 42; fi; " +
@@ -202,17 +331,125 @@ final class RootResolverManager {
                 "if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then echo alive=yes; else echo alive=no; fi; " +
                 "cat " + quote(LOG) + " 2>/dev/null || true; " +
                 "[ $ready -eq 1 ]";
-        RootShell.Result nativeStart = RootShell.run(prep, 14000);
-        if (nativeStart.ok()) return nativeStart;
+    }
 
-        // Last-resort compatibility fallback for builds that somehow omit/exclude the native
-        // helper. app_process is retained only as a diagnostic fallback, not the primary path.
+    private static String transientPermissiveStartCommand(String prep) {
+        return "orig=$(getenforce 2>/dev/null || echo Unknown); echo SELinux-before=$orig; " +
+                "if [ \"$orig\" = Enforcing ]; then setenforce 0 2>&1 || exit 60; fi; " +
+                "( " + prep + " ); rc=$?; " +
+                "if [ \"$orig\" = Enforcing ]; then setenforce 1 2>&1 || true; fi; " +
+                "echo SELinux-after=$(getenforce 2>/dev/null || echo Unknown); exit $rc";
+    }
+
+    private static RootShell.Result tryLivePolicyPatch(String helperOutput) {
+        String helperContext = helperContext(helperOutput);
+        String domain = selinuxType(helperContext);
+        if (domain.length() == 0) {
+            RootShell.Result ctxResult = RootShell.run("cat /proc/$$/attr/current 2>/dev/null || true", 4000);
+            helperContext = clean(ctxResult.output);
+            domain = selinuxType(helperContext);
+        }
+
+        RootShell.Result toolResult = RootShell.run(
+                "for p in magiskpolicy supolicy /sbin/magiskpolicy /sbin/supolicy /data/adb/magisk/magiskpolicy; do " +
+                "command -v \"$p\" >/dev/null 2>&1 && { command -v \"$p\"; exit 0; }; [ -x \"$p\" ] && { echo \"$p\"; exit 0; }; done; exit 1", 4000);
+        String tool = firstToken(toolResult.output);
+        if (domain.length() == 0 || tool.length() == 0) {
+            return new RootShell.Result(61, "helper-context=" + valueOrNone(helperContext) +
+                    " policy-tool=" + valueOrNone(tool));
+        }
+
+        String qt = quote(tool);
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("ok=0; ");
+        // On AOSP-style policy, netdomain already carries most socket permissions. Some vendor
+        // roots drop that attribute from their root/shell domain, so restore it when the policy
+        // engine supports live typeattribute changes. Failure is harmless; exact rules follow.
+        appendPolicy(cmd, qt, "typeattribute " + domain + " netdomain", false);
+        appendPolicy(cmd, qt, "allow " + domain + " dns_port udp_socket name_bind", true);
+        appendPolicy(cmd, qt, "allow " + domain + " dns_port tcp_socket name_bind", true);
+        appendPolicy(cmd, qt, "allow " + domain + " unreserved_port tcp_socket name_connect", true);
+        appendPolicy(cmd, qt, "allow " + domain + " node udp_socket node_bind", false);
+        appendPolicy(cmd, qt, "allow " + domain + " node tcp_socket node_bind", false);
+        appendPolicy(cmd, qt, "allow " + domain + " loopback_node udp_socket node_bind", false);
+        appendPolicy(cmd, qt, "allow " + domain + " loopback_node tcp_socket node_bind", false);
+        appendPolicy(cmd, qt, "allow " + domain + " " + domain + " udp_socket { create ioctl read write getattr setopt getopt bind connect sendto recvfrom shutdown }", false);
+        appendPolicy(cmd, qt, "allow " + domain + " " + domain + " tcp_socket { create ioctl read write getattr setopt getopt bind listen accept connect shutdown }", false);
+
+        // Use actual AVC denials as a second source of truth. Only network socket classes and a
+        // conservative permission whitelist are accepted, and only when the denial's source type
+        // is exactly the helper's domain. This lets the same build adapt to vendor-specific policy
+        // without turning unrelated denials into blanket allow rules.
+        RootShell.Result avc = recentAvc();
+        String[] lines = avc.output == null ? new String[0] : avc.output.split("\\r?\\n");
+        int avcRules = 0;
+        for (String line : lines) {
+            PolicyDenial denial = parseNetworkDenial(line, domain);
+            if (denial == null) continue;
+            appendPolicy(cmd, qt, "allow " + domain + " " + denial.targetType + " " + denial.tclass +
+                    " { " + denial.permissions + " }", true);
+            avcRules++;
+            if (avcRules >= 8) break;
+        }
+        cmd.append("echo policy_tool=").append(qt).append(" domain=").append(quote(domain))
+                .append(" avc_rules=").append(avcRules).append(" applied=$ok; [ $ok -eq 1 ]");
+        RootShell.Result applied = RootShell.run(cmd.toString(), 10000);
+        return new RootShell.Result(applied.code,
+                "helper-context=" + helperContext + " " + applied.output);
+    }
+
+    private static void appendPolicy(StringBuilder cmd, String quotedTool, String statement, boolean countsAsSuccess) {
+        cmd.append(quotedTool).append(" --live ").append(quote(statement)).append(" >/dev/null 2>&1");
+        if (countsAsSuccess) cmd.append(" && ok=1");
+        cmd.append(" || true; ");
+    }
+
+    private static String helperContext(String output) {
+        if (output == null) return "";
+        Matcher m = Pattern.compile("context=([^\\s]+)").matcher(output);
+        String last = "";
+        while (m.find()) last = clean(m.group(1));
+        return last;
+    }
+
+    private static PolicyDenial parseNetworkDenial(String line, String expectedSource) {
+        if (line == null || line.toLowerCase().indexOf("avc:") < 0 || line.toLowerCase().indexOf("denied") < 0) return null;
+        Matcher perms = Pattern.compile("denied\\s*\\{([^}]*)\\}", Pattern.CASE_INSENSITIVE).matcher(line);
+        Matcher src = Pattern.compile("scontext=[^: \t]+:[^: \t]+:([^: \t]+):[^ \t]+", Pattern.CASE_INSENSITIVE).matcher(line);
+        Matcher tgt = Pattern.compile("tcontext=[^: \t]+:[^: \t]+:([^: \t]+):[^ \t]+", Pattern.CASE_INSENSITIVE).matcher(line);
+        Matcher cls = Pattern.compile("tclass=([A-Za-z0-9_]+)", Pattern.CASE_INSENSITIVE).matcher(line);
+        if (!perms.find() || !src.find() || !tgt.find() || !cls.find()) return null;
+        String source = clean(src.group(1));
+        String target = clean(tgt.group(1));
+        String tclass = clean(cls.group(1));
+        if (!expectedSource.equals(source) || !networkClass(tclass)) return null;
+        StringBuilder allowed = new StringBuilder();
+        for (String p : perms.group(1).trim().split("\\s+")) {
+            p = p.replaceAll("[^A-Za-z0-9_]", "");
+            if (!networkPermission(p)) continue;
+            if (allowed.length() > 0) allowed.append(' ');
+            allowed.append(p);
+        }
+        if (allowed.length() == 0 || target.length() == 0) return null;
+        return new PolicyDenial(target, tclass, allowed.toString());
+    }
+
+    private static boolean networkClass(String c) {
+        return "udp_socket".equals(c) || "tcp_socket".equals(c) || "rawip_socket".equals(c) ||
+                "netlink_route_socket".equals(c) || "sock_file".equals(c);
+    }
+
+    private static boolean networkPermission(String p) {
+        String all = " accept append bind connect create getattr getopt ioctl listen lock name_bind name_connect node_bind open read recvfrom recv_msg send_msg sendto setattr setopt shutdown unlink write map ";
+        return p.length() > 0 && all.indexOf(" " + p + " ") >= 0;
+    }
+
+    private static RootShell.Result startAppProcessFallback(Context context, int proxyPort) {
         RootShell.Result appProcess = RootShell.run(
                 "for p in /system/bin/app_process /system/bin/app_process64 /system/bin/app_process32; do " +
                 "[ -x \"$p\" ] && { echo \"$p\"; exit 0; }; done; exit 1", 5000);
         if (!appProcess.ok() || clean(appProcess.output).length() == 0) {
-            return new RootShell.Result(42, "native helper failed: " + nativeStart.output +
-                    " | app_process executable not found: " + appProcess.output);
+            return new RootShell.Result(42, "app_process executable not found: " + appProcess.output);
         }
         String appProcessPath = clean(appProcess.output).split("\\s+")[0];
         String apk = context.getApplicationInfo().sourceDir;
@@ -220,9 +457,34 @@ final class RootResolverManager {
                 "(CLASSPATH=" + quote(apk) + " " + quote(appProcessPath) +
                 " /system/bin com.tommy.rootdns.RootPort53Forwarder " + proxyPort +
                 " >" + LOG + " 2>&1 & echo $! >" + PID + "); " +
-                "sleep 2; echo backend=app_process-fallback; echo pid=$(cat " + PID + " 2>/dev/null); cat " + LOG + " 2>/dev/null || true";
-        RootShell.Result old = RootShell.run(fallback, 8000);
-        return new RootShell.Result(old.code, "native helper failed: " + oneLine(nativeStart.output) + "\n" + old.output);
+                "sleep 2; echo backend=app_process-exec-fallback; echo pid=$(cat " + PID + " 2>/dev/null); cat " + LOG + " 2>/dev/null || true";
+        return RootShell.run(fallback, 8000);
+    }
+
+    private static boolean isBindPermissionDenied(String output) {
+        String lower = output == null ? "" : output.toLowerCase();
+        return lower.indexOf("permission denied") >= 0 || lower.indexOf("errno=13") >= 0;
+    }
+
+    private static String selinuxType(String context) {
+        context = clean(context);
+        String[] parts = context.split(":");
+        if (parts.length >= 3) {
+            String type = parts[2].replaceAll("[^A-Za-z0-9_]", "");
+            return type;
+        }
+        return "";
+    }
+
+    private static RootShell.Result recentAvc() {
+        return RootShell.run(
+                "(dmesg 2>/dev/null || true; logcat -b all -d 2>/dev/null || true) | grep -i 'avc:.*denied' | tail -n 8 || true", 7000);
+    }
+
+    private static void restoreSelinux(Context context) {
+        if (!AppPrefs.selinuxRelaxed(context)) return;
+        RootShell.run("setenforce 1 2>/dev/null || true", 5000);
+        AppPrefs.selinuxRelaxed(context, false);
     }
 
     private static String stageNativeHelper(Context context, String packaged) {
@@ -252,29 +514,40 @@ final class RootResolverManager {
         StringBuilder log = new StringBuilder();
 
         if (state.netId > 0) {
+            int before = helperQueryCount();
             RootShell.Result net = applyNetId(state.netId);
             log.append("setnetdns[").append(state.netId).append("]: code=")
                     .append(net.code).append(" • ").append(oneLine(net.output)).append('\n');
             if (commandLooksSuccessful(net)) {
-                applyPropertiesOnly();
-                return new ApplyResult(true, "setnetdns", log.toString());
+                boolean verified = verifySystemResolverThroughBridge(before);
+                log.append("setnetdns behavioral verify: ").append(verified ? "BRIDGE_HIT" : "NO_BRIDGE_HIT").append('\n');
+                if (verified) {
+                    applyPropertiesOnly();
+                    return new ApplyResult(true, "setnetdns", log.toString());
+                }
             }
         } else {
             log.append("setnetdns: skipped (no netId)\n");
         }
 
         if (state.iface.length() > 0) {
+            int before = helperQueryCount();
             RootShell.Result legacy = applyLegacyIface(state.iface);
             log.append("legacy resolver[").append(state.iface).append("]: code=")
                     .append(legacy.code).append(" • ").append(oneLine(legacy.output)).append('\n');
             if (commandLooksSuccessful(legacy)) {
-                applyPropertiesOnly();
-                return new ApplyResult(true, "legacy-iface", log.toString());
+                boolean verified = verifySystemResolverThroughBridge(before);
+                log.append("legacy behavioral verify: ").append(verified ? "BRIDGE_HIT" : "NO_BRIDGE_HIT").append('\n');
+                if (verified) {
+                    applyPropertiesOnly();
+                    return new ApplyResult(true, "legacy-iface", log.toString());
+                }
             }
         } else {
             log.append("legacy resolver: skipped (no default iface)\n");
         }
 
+        int before = helperQueryCount();
         RootShell.Result props = applyPropertiesOnly();
         String p1 = prop("net.dns1");
         String p2 = prop("net.dns2");
@@ -282,8 +555,30 @@ final class RootResolverManager {
                 .append(oneLine(props.output)).append('\n');
         log.append("property verify: net.dns1=").append(valueOrNone(p1))
                 .append(" net.dns2=").append(valueOrNone(p2)).append('\n');
-        boolean ok = props.ok() && "127.0.0.1".equals(p1);
-        return new ApplyResult(ok, "properties", log.toString());
+        boolean propertyValues = props.ok() && "127.0.0.1".equals(p1);
+        boolean behavioral = propertyValues && verifySystemResolverThroughBridge(before);
+        log.append("property behavioral verify: ").append(behavioral ? "BRIDGE_HIT" : "NO_BRIDGE_HIT").append('\n');
+        return new ApplyResult(behavioral, "properties", log.toString());
+    }
+
+    private static int helperQueryCount() {
+        RootShell.Result r = RootShell.run("grep -c '^QUERY ' " + quote(LOG) + " 2>/dev/null || echo 0", 4000);
+        String value = clean(r.output);
+        if (value.indexOf('\n') >= 0) value = value.substring(value.lastIndexOf('\n') + 1).trim();
+        try { return Integer.parseInt(value); }
+        catch (Throwable ignored) { return 0; }
+    }
+
+    private static boolean verifySystemResolverThroughBridge(int beforeCount) {
+        String name = "tdns-check-" + Long.toHexString(System.nanoTime()) + ".example.com";
+        try {
+            InetAddress.getByName(name);
+        } catch (Throwable ignored) {
+            // NXDOMAIN is fine. The only thing being verified is whether the system resolver's
+            // query traversed the local bridge, not whether the random hostname exists.
+        }
+        int after = helperQueryCount();
+        return after > beforeCount;
     }
 
     private static RootShell.Result applyNetId(int netId) {
@@ -595,6 +890,17 @@ final class RootResolverManager {
 
     private static String valueOrNone(String value) {
         return value == null || value.length() == 0 ? "(none)" : value;
+    }
+
+    private static final class PolicyDenial {
+        final String targetType;
+        final String tclass;
+        final String permissions;
+        PolicyDenial(String targetType, String tclass, String permissions) {
+            this.targetType = targetType;
+            this.tclass = tclass;
+            this.permissions = permissions;
+        }
     }
 
     private static final class ApplyResult {

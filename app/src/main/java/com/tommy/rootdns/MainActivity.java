@@ -1,6 +1,7 @@
 package com.tommy.rootdns;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -37,8 +38,10 @@ public final class MainActivity extends Activity {
     private TextView diagnostics;
     private EditText endpoint;
     private Switch autoStart;
+    private Switch extremeCompat;
     private boolean receiverRegistered;
     private boolean vpnPromptOpen;
+    private boolean compatibilityPromptOpen;
 
     private final BroadcastReceiver updates = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -48,6 +51,9 @@ public final class MainActivity extends Activity {
             if (diagnostics != null) diagnostics.setText(AppPrefs.diagnostics(MainActivity.this));
             if (intent.getBooleanExtra(RootDnsService.EXTRA_NEED_VPN, false)) {
                 requestVpnPermission();
+            }
+            if (intent.getBooleanExtra(RootDnsService.EXTRA_NEED_COMPAT, false)) {
+                requestCompatibilityApproval();
             }
         }
     };
@@ -59,6 +65,11 @@ public final class MainActivity extends Activity {
         window.setNavigationBarColor(Color.BLACK);
         setContentView(buildUi());
         refresh();
+        if (AppPrefs.selinuxRelaxed(this) && !AppPrefs.active(this)) {
+            worker.execute(new Runnable() {
+                @Override public void run() { RootResolverManager.emergencyRestoreSecurity(MainActivity.this); }
+            });
+        }
         checkRoot();
     }
 
@@ -173,7 +184,19 @@ public final class MainActivity extends Activity {
         autoStart.setTextColor(Color.rgb(244, 246, 248));
         autoStart.setPadding(0, dp(4), 0, dp(4));
         autoStart.setOnCheckedChangeListener((buttonView, isChecked) -> AppPrefs.autoStart(this, isChecked));
-        body.addView(autoStart, lp(-1, -2, 0, 0, 0, 18));
+        body.addView(autoStart, lp(-1, -2, 0, 0, 0, 10));
+
+        extremeCompat = new Switch(this);
+        extremeCompat.setText("Extreme compatibility");
+        extremeCompat.setTextSize(15);
+        extremeCompat.setTextColor(Color.rgb(244, 246, 248));
+        extremeCompat.setPadding(0, dp(4), 0, dp(4));
+        extremeCompat.setOnCheckedChangeListener((buttonView, isChecked) -> AppPrefs.extremeCompatibility(this, isChecked));
+        body.addView(extremeCompat, lp(-1, -2, 0, 0, 0, 4));
+
+        TextView extremeHint = text("Only used if vendor SELinux blocks localhost DNS port 53. Tommy first tries safer methods and a momentary permissive bind; this switch allows SELinux to remain permissive only while DNS is active, with an automatic root watchdog restoring Enforcing if the app/helper exits.", 11,
+                Color.rgb(132, 140, 152));
+        body.addView(extremeHint, lp(-1, -2, 0, 0, 0, 18));
 
         Button enable = button("ENABLE DNS", true);
         enable.setOnClickListener(v -> enableDns());
@@ -203,7 +226,7 @@ public final class MainActivity extends Activity {
         copy.setOnClickListener(v -> copyDiagnostics());
         body.addView(copy, lp(-1, dp(48), 0, 0, 0, 18));
 
-        TextView note = text("v1.8 adapts to this VPhoneGaGa network stack: Android still sends normal UDP/TCP DNS to localhost:53, but the native root bridge now carries both paths to Tommy over the proven TCP DNS listener on 127.0.0.1:5454. A broken app-side UDP/5454 path no longer blocks resolver mode. Persistent root sessions remain enabled to avoid Superuser toast spam.", 12,
+        TextView note = text("v1.9 is SELinux-aware. It tries loopback and wildcard-loopback-filtered binds, a fresh root execution domain, narrow live policy repair when a supported policy tool exists, then a momentary permissive bind that immediately restores Enforcing. Extreme compatibility is a final opt-in only. The bridge still translates Android UDP/TCP DNS to Tommy's proven TCP/5454 listener.", 12,
                 Color.rgb(120, 128, 140));
         body.addView(note);
 
@@ -236,6 +259,26 @@ public final class MainActivity extends Activity {
         Intent vpnIntent = new Intent(this, VpnDnsService.class);
         vpnIntent.setAction(VpnDnsService.ACTION_STOP);
         startCompatService(vpnIntent);
+    }
+
+    private void requestCompatibilityApproval() {
+        if (compatibilityPromptOpen || AppPrefs.extremeCompatibility(this)) return;
+        compatibilityPromptOpen = true;
+        new AlertDialog.Builder(this)
+                .setTitle("VPhoneGaGa compatibility")
+                .setMessage("This virtual Android grants root but SELinux is blocking the local DNS port 53, while its kernel also has no usable iptables/NAT or TUN VPN driver. Tommy already tried safer root contexts and temporary bind-only compatibility.\n\nAllowing this last-resort mode keeps SELinux Permissive only while Tommy DNS is active. A root watchdog restores Enforcing if the app or DNS helper exits, and DISABLE restores it immediately.")
+                .setNegativeButton("CANCEL", (dialog, which) -> {
+                    compatibilityPromptOpen = false;
+                    status.setText("Compatibility approval declined");
+                })
+                .setPositiveButton("ALLOW & RETRY", (dialog, which) -> {
+                    compatibilityPromptOpen = false;
+                    AppPrefs.extremeCompatibility(MainActivity.this, true);
+                    if (extremeCompat != null) extremeCompat.setChecked(true);
+                    enableDns();
+                })
+                .setOnCancelListener(dialog -> compatibilityPromptOpen = false)
+                .show();
     }
 
     private void requestVpnPermission() {
@@ -323,6 +366,7 @@ public final class MainActivity extends Activity {
         if (status != null) status.setText(AppPrefs.status(this));
         if (endpoint != null) endpoint.setText(AppPrefs.endpoint(this));
         if (autoStart != null) autoStart.setChecked(AppPrefs.autoStart(this));
+        if (extremeCompat != null) extremeCompat.setChecked(AppPrefs.extremeCompatibility(this));
         if (diagnostics != null) diagnostics.setText(AppPrefs.diagnostics(this));
         refreshMode();
     }

@@ -18,8 +18,8 @@ android {
         applicationId 'com.tommy.rootdns'
         minSdk 24
         targetSdk 28
-        versionCode 9
-        versionName '1.8.0'
+        versionCode 10
+        versionName '1.9.0'
 
         buildConfigField 'int', 'DNS_PROXY_PORT', '5454'
     }

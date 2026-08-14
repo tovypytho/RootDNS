@@ -26,6 +26,8 @@ final class AppPrefs {
     private static final String K_R_CH = "rc";
     private static final String K_R_STRAT = "rs";
     private static final String K_R_HAS = "rh";
+    private static final String K_EXTREME = "cx";
+    private static final String K_SE_RELAXED = "sr";
 
     private AppPrefs() {}
 
@@ -47,6 +49,22 @@ final class AppPrefs {
 
     static void autoStart(Context context, boolean value) {
         p(context).edit().putBoolean(K_AUTO, value).apply();
+    }
+
+    static boolean extremeCompatibility(Context context) {
+        return p(context).getBoolean(K_EXTREME, false);
+    }
+
+    static void extremeCompatibility(Context context, boolean value) {
+        p(context).edit().putBoolean(K_EXTREME, value).apply();
+    }
+
+    static boolean selinuxRelaxed(Context context) {
+        return p(context).getBoolean(K_SE_RELAXED, false);
+    }
+
+    static void selinuxRelaxed(Context context, boolean value) {
+        p(context).edit().putBoolean(K_SE_RELAXED, value).apply();
     }
 
     static boolean active(Context context) {

@@ -1,45 +1,46 @@
-TommyRootDNS v1.8 validation
+TommyRootDNS v1.9 validation
 ============================
 
 Project metadata
-- versionCode: 9
-- versionName: 1.8.0
+- versionCode: 10
+- versionName: 1.9.0
 - minSdk: 24 (Android 7.0)
 - targetSdk: 28
 - compileSdk: 35
-- native helper ABIs: arm64-v8a + armeabi-v7a
+- native helper ABIs built by GitHub Actions: arm64-v8a + armeabi-v7a
 
 Diagnosis used for this release
-- Supplied v1.7 VPhoneGaGa log reports active netId=100.
-- Default interface is eth0.
+- Supplied v1.8 VPhoneGaGa log reports active netId=100 and default iface=eth0.
 - Original DNS servers are 180.250.245.142 and 180.250.245.133.
-- iptables NAT remains unavailable.
-- kernel TUN remains unavailable.
-- Crucially, the app proxy reports: backend 127.0.0.1:5454 UDP=FAIL TCP=OK.
-- v1.7 therefore aborted before starting the root bridge.
+- iptables filter/nat and kernel TUN remain unavailable.
+- App proxy reports UDP/5454=FAIL but TCP/5454=OK during enable.
+- Native helper is packaged, copied to /data/local/tmp, and starts far enough to execute its bind code.
+- Exact failure: bind UDP 127.0.0.1:53 -> errno=13 Permission denied while SELinux is Enforcing.
+- Therefore the current blocker is privileged-port/SELinux policy, not DNS transport, netId discovery, ABI packaging, root uid, netfilter, or TUN.
 
-v1.8 fix
-- Root resolver mode no longer requires UDP/5454.
-- TCP/5454 is the required backend health check.
-- Native helper keeps UDP+TCP listeners on 127.0.0.1:53 for Android compatibility.
-- UDP/53 queries are encapsulated using the standard 2-byte DNS-over-TCP length prefix and sent to 127.0.0.1:5454 over TCP.
-- The TCP DNS response is unpacked and returned as a normal UDP response to the Android resolver.
-- TCP/53 requests continue to relay to TCP/5454.
-- This isolates the app-side Java UDP problem without changing Android's resolver-facing protocol.
+v1.9 defensive strategy
+1. Persistent-root native bind.
+2. Fresh su execution-domain native bind on EACCES.
+3. Native loopback bind, with wildcard + loopback-source-filter fallback.
+4. Helper-context-aware magiskpolicy/supolicy repair: netdomain + narrow known socket rules + whitelisted AVC-derived network rules when an installed policy tool supports them.
+5. Transient Permissive bind with automatic immediate return to Enforcing before UDP/TCP probes.
+6. Optional Extreme compatibility only after explicit user approval; the app prompts when all safe paths are exhausted and TUN is unavailable. An external root watchdog restores Enforcing if app/helper exits.
+7. After resolver override, a unique system DNS lookup must increment the native helper query counter; command-level success alone is no longer accepted.
 
 Local checks performed
 - native/rootdns53.c compiled with host GCC using -std=c11 -Wall -Wextra -Werror.
-- End-to-end mock test passed with a backend that exposed TCP only:
-  * UDP client -> 127.0.0.1:53 -> native bridge -> TCP backend -> UDP response: PASS.
-  * TCP client -> 127.0.0.1:53 -> native bridge -> TCP backend -> TCP response: PASS.
-- Native READY output reports backend=tcp.
-- Android XML files parse successfully.
-- GitHub workflow remains web-upload-friendly and compiles ARM64/ARMv7 helper with NDK 26.3 before Gradle/R8.
+- TCP-only backend smoke test passed:
+  * UDP client -> :53 -> native bridge -> TCP/5454 mock backend -> UDP response: PASS.
+  * TCP client -> :53 -> native bridge -> TCP/5454 mock backend -> TCP response: PASS.
+- Native READY output includes backend=tcp and clients=loopback-only.
+- Native helper identity logging includes pid/uid/gid/SELinux context before bind, so policy failures are attributed to the actual child domain.
+- Full app Java source (including MainActivity compatibility dialog, service fallback, resolver manager, root shell, VPN path, diagnostics) compiles successfully as Java 8 against purpose-built Android/project stubs.
+- YAML parses successfully.
+- Android XML resource/manifest files parse successfully.
 
-Expected next VPhoneGaGa diagnostics
-- backend 127.0.0.1:5454 UDP=FAIL TCP=OK
-- bridge backend transport=TCP (UDP/53 clients are translated to TCP/5454)
-- helper start: backend=native ... READY native ... backend=tcp
-- localhost:53 UDP=OK TCP=OK
-- setnetdns[100]: a 2xx success or an explicit netd error
-- ROOT_RESOLVER_OK on success
+Safety notes
+- Automatic compatibility attempts do not intentionally leave SELinux Permissive.
+- Extreme compatibility is OFF by default and visibly opt-in.
+- When Extreme compatibility changes Enforcing -> Permissive, a root watchdog is launched to restore Enforcing if either the APK process or DNS helper disappears.
+- Disable/failsafe also restores Enforcing.
+- Wildcard-bound helper rejects all non-loopback client source addresses in userspace.
