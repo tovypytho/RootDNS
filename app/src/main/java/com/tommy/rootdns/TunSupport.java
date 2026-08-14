@@ -10,6 +10,19 @@ final class TunSupport {
 
     /** True only when we can positively see that this kernel has no TUN device/driver. */
     static boolean definitelyUnavailable() {
+        // App-sandbox access to /proc/misc is inconsistent on virtual Android. Since v1.6
+        // already keeps a single persistent root shell, ask that shell once instead of
+        // treating an app-level permission failure as "unknown" and attempting a VPN
+        // that is known to fail with Cannot create interface.
+        RootShell.Result r = RootShell.run(
+                "if [ -c /dev/tun ]; then echo present; " +
+                "elif grep -qi '[[:space:]]tun$' /proc/misc 2>/dev/null; then echo driver-present; " +
+                "else echo absent; fi", 5000);
+        String v = r.output == null ? "" : r.output.trim();
+        if (r.ok() && v.contains("absent")) return true;
+        if (v.contains("present") || v.contains("driver-present")) return false;
+
+        // Last non-root fallback if the root session is unavailable.
         try {
             if (new File("/dev/tun").exists()) return false;
             BufferedReader br = new BufferedReader(new FileReader("/proc/misc"));
@@ -21,7 +34,7 @@ final class TunSupport {
             } finally { br.close(); }
             return true;
         } catch (Throwable ignored) {
-            return false; // unknown: retain the compatibility attempt
+            return false;
         }
     }
 

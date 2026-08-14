@@ -1,32 +1,54 @@
-TommyRootDNS v1.5 validation
+TommyRootDNS v1.7 validation
 ============================
 
-Version
-- versionCode: 6
-- versionName: 1.5.0
-- minSdk: 24
-- targetSdk: 28 (intentional sideload/root compatibility target)
+Project metadata
+- versionCode: 8
+- versionName: 1.7.0
+- minSdk: 24 (Android 7.0)
+- targetSdk: 28
+- compileSdk: 35
+- universal ARM APK helper ABIs: arm64-v8a + armeabi-v7a
 
-Changes validated
-- Root resolver starts localhost:53 bridge before requiring an Android netId.
-- Resolver discovers netId via ConnectivityManager then Android 7 dumpsys connectivity.
-- Default interface discovery uses /proc/net/route with ip route fallback.
-- Resolver strategy order: setnetdns -> legacy setifdns/setdefaultif -> net.dns property fallback.
-- net.dns fallback bumps net.dnschange and sends CLEAR_DNS_CACHE broadcast.
-- Resolver backup/restore includes strategy, interface, DNS props and dnschange.
-- Restore is guarded by an explicit backup marker to avoid clearing DNS on a fresh start.
-- VPN is skipped only when /dev/tun is absent and readable /proc/misc positively contains no TUN driver.
+Diagnosis used for this release
+- The tested VPhoneGaGa exposes Android default network netId 100 and DNS servers 180.250.245.142 / 180.250.245.133 through dumpsys.
+- Kernel iptables filter/nat tables remain unavailable.
+- Kernel TUN driver/device remains unavailable.
+- v1.5 successfully spawned an app_process helper PID but localhost:53 did not answer and the helper log was empty.
+- This strongly isolates the next failure to the privileged port-53 bridge rather than netId discovery or the upstream DoH health check.
 
-Static checks
-- Java source compile-check against local Android API-shape stubs: PASS
-  (javac source/target 8; only expected deprecation/obsolete source-level warnings)
-- AndroidManifest/res XML parse: PASS
-- GitHub Actions YAML parse: PASS
+v1.7 fixes
+- Replaces app_process as the primary port-53 bridge with a tiny native C helper.
+- GitHub Actions compiles the helper with Android NDK 26.3 for arm64-v8a and armeabi-v7a.
+- AndroidManifest forces native libraries to be extracted so the selected ABI helper is available through nativeLibraryDir.
+- App stages the packaged helper when possible; persistent root copies it to /data/local/tmp/tommy_dns53 and chmods it 0755.
+- Helper binds UDP + TCP 127.0.0.1:53 and forwards to 127.0.0.1:5454.
+- Helper emits READY/pid/bind/forwarding errors to /data/local/tmp/tommy_dns53.log.
+- App verifies the ordinary 5454 DNS proxy over UDP/TCP before attempting the root bridge.
+- App separately probes localhost:53 over UDP/TCP after helper startup.
+- Default interface is parsed from the active dumpsys network block or /proc/net/route in Java; no dependency on awk. This addresses the previous false `default iface=sh:` result.
+- netd command validation rejects 5xx replies even if the ndc process exits with code 0.
+- TUN unavailability is checked through the persistent root session, so a confirmed no-TUN kernel skips futile VPN startup attempts.
+- Persistent su session from v1.6 is retained to suppress repeated Superuser-granted toast spam.
 
-DNS53 bridge smoke test
-- UDP 127.0.0.1:53 -> 127.0.0.1:5454: PASS
-- TCP 127.0.0.1:53 -> 127.0.0.1:5454: PASS
+Local checks performed
+- native/rootdns53.c compiled with host GCC using -Wall -Wextra -Werror.
+- Native helper smoke test passed:
+  * helper bound 127.0.0.1:53;
+  * UDP DNS query was relayed to mock 127.0.0.1:5454 and returned;
+  * TCP DNS query was relayed to mock 127.0.0.1:5454 and returned.
+- RootResolverManager.java + RootShell.java + TunSupport.java compiled with Java 8 source/target against minimal Android/project stubs.
+- AndroidManifest.xml and all resource XML files parsed successfully.
+- GitHub Actions YAML parsed successfully.
+- Workflow installs NDK 26.3 and compiles both ARM helper variants before Gradle/R8 build.
 
-Runtime note
-- Full Android Gradle APK build and VPhoneGaGa runtime behavior must still be validated by GitHub Actions + the target Android 7 virtual environment.
-- v1.5 specifically targets the observed VPhoneGaGa state where net.dns1/net.dns2 exist but ConnectivityManager reports no active netId, while netfilter and TUN are unavailable.
+What must still be verified on VPhoneGaGa
+- Whether SELinux permits the root helper copied to /data/local/tmp to bind localhost port 53.
+- Whether the root helper can reach the app-owned 127.0.0.1:5454 socket.
+- Whether `ndc resolver setnetdns 100 '' 127.0.0.1` is accepted by this vendor netd after the bridge is healthy.
+
+Expected useful diagnostics after install
+- backend 127.0.0.1:5454 UDP=OK TCP=OK
+- helper start: ... backend=native ... alive=yes ... READY native ...
+- localhost:53 UDP=OK TCP=OK
+- default iface=eth0 (expected from the supplied dumpsys)
+- setnetdns[100]: 2xx on success, or an explicit netd 5xx/error if rejected

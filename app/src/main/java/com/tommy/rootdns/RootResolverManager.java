@@ -4,6 +4,9 @@ import android.content.Context;
 import android.net.ConnectivityManager;
 import android.net.LinkProperties;
 import android.net.Network;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -15,12 +18,13 @@ import java.util.regex.Pattern;
 /**
  * Root resolver fallback for virtual Android builds without usable netfilter/TUN.
  *
- * v1.5 deliberately supports both the Android 5-7 per-network netd resolver and
- * older/property-driven resolver stacks found in virtual Android products.
+ * v1.7 supports Android 5-7 per-network netd/property resolver stacks and uses a
+ * native root DNS53 helper because app_process is unreliable in this virtual Android.
  */
 final class RootResolverManager {
     private static final String PID = "/data/local/tmp/tommy_dns53.pid";
     private static final String LOG = "/data/local/tmp/tommy_dns53.log";
+    private static final String BIN = "/data/local/tmp/tommy_dns53";
     private static final Pattern ACTIVE_DEFAULT = Pattern.compile("(?m)^\\s*Active default network:\\s*(\\d+)\\s*$");
     private static final Pattern NETWORK_WRAPPED = Pattern.compile("network\\{(\\d+)\\}");
 
@@ -48,12 +52,28 @@ final class RootResolverManager {
         AppPrefs.resolverBackup(context, state.netId, state.dns, state.domains,
                 oldProp1, oldProp2, state.iface, oldDnsChange, "");
 
-        // Start localhost:53 before requiring a netId. VPhoneGaGa can expose a legacy
-        // property-based resolver while ConnectivityManager reports no active Network.
+        // Prove the ordinary app-side proxy is answering before inserting the privileged
+        // port-53 bridge. This isolates DoH/proxy failures from root-helper failures.
+        boolean backendUdp = probeDnsUdp(proxyPort, 8000);
+        boolean backendTcp = probeDnsTcp(proxyPort, 8000);
+        out.append("backend 127.0.0.1:").append(proxyPort)
+                .append(" UDP=").append(backendUdp ? "OK" : "FAIL")
+                .append(" TCP=").append(backendTcp ? "OK" : "FAIL").append('\n');
+        if (!backendUdp) {
+            return new RootShell.Result(41, out.append("ERROR: app DNS proxy did not answer before root bridge").toString());
+        }
+
+        // Start localhost:53 before requiring a netId. v1.7 uses a tiny NDK-built native
+        // helper instead of app_process; some virtual Android builds allow a root native
+        // executable from /data/local/tmp but silently kill/deny app_process loading APK dex.
         RootShell.Result helper = startHelper(context, proxyPort);
         out.append("helper start: code=").append(helper.code).append(" • ")
                 .append(oneLine(helper.output)).append('\n');
-        if (!probeLocalDns53()) {
+        boolean localUdp = probeDnsUdp(53, 10000);
+        boolean localTcp = probeDnsTcp(53, 10000);
+        out.append("localhost:53 UDP=").append(localUdp ? "OK" : "FAIL")
+                .append(" TCP=").append(localTcp ? "OK" : "FAIL").append('\n');
+        if (!localUdp) {
             out.append("ERROR: localhost:53 bridge did not answer DNS\n");
             RootShell.Result details = RootShell.run("cat " + LOG + " 2>/dev/null || true", 4000);
             if (details.output.length() > 0) out.append(details.output).append('\n');
@@ -124,19 +144,27 @@ final class RootResolverManager {
         out.append("net.dnschange: ").append(valueOrNone(prop("net.dnschange"))).append('\n');
         RootShell.Result route = RootShell.run("cat /proc/net/route 2>/dev/null | head -n 12 || true", 4000);
         out.append("route table: ").append(valueOrNone(oneLine(route.output))).append('\n');
-        RootShell.Result conn = RootShell.run("dumpsys connectivity 2>/dev/null | head -n 35 || true", 6000);
-        out.append("connectivity head: ").append(valueOrNone(oneLine(conn.output))).append('\n');
+        RootShell.Result conn = RootShell.run("dumpsys connectivity 2>/dev/null | grep -E 'Active default network|network\\{|InterfaceName:|DnsAddresses:' | head -n 12 || true", 6000);
+        out.append("connectivity summary: ").append(valueOrNone(oneLine(conn.output))).append('\n');
         RootShell.Result ndc = RootShell.run("command -v ndc 2>/dev/null || ls /system/bin/ndc 2>/dev/null || true", 4000);
         out.append("ndc: ").append(valueOrNone(clean(ndc.output))).append('\n');
         RootShell.Result ndcProbe = RootShell.run("ndc resolver 2>&1 || true", 4000);
         out.append("ndc resolver probe: ").append(valueOrNone(oneLine(ndcProbe.output))).append('\n');
+        RootShell.Result nativePkg = RootShell.run("ls -lZ " + quote(context.getApplicationInfo().nativeLibraryDir + "/libtdns53.so") + " 2>&1 || true", 4000);
+        out.append("packaged native helper: ").append(valueOrNone(oneLine(nativePkg.output))).append('\n');
+        RootShell.Result nativeTmp = RootShell.run("ls -lZ " + BIN + " 2>&1 || ls -l " + BIN + " 2>&1 || true", 4000);
+        out.append("root helper binary: ").append(valueOrNone(oneLine(nativeTmp.output))).append('\n');
         RootShell.Result ap = RootShell.run("ls -l /system/bin/app_process* 2>/dev/null || true", 4000);
-        out.append("app_process: ").append(valueOrNone(oneLine(ap.output))).append('\n');
-        RootShell.Result pid = RootShell.run("cat " + PID + " 2>/dev/null || true", 4000);
-        out.append("helper pid: ").append(valueOrNone(clean(pid.output))).append('\n');
-        RootShell.Result log = RootShell.run("tail -n 12 " + LOG + " 2>/dev/null || true", 4000);
+        out.append("app_process fallback: ").append(valueOrNone(oneLine(ap.output))).append('\n');
+        RootShell.Result pid = RootShell.run("p=$(cat " + PID + " 2>/dev/null); echo pid=$p; if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then echo alive=yes; else echo alive=no; fi", 4000);
+        out.append("helper process: ").append(valueOrNone(oneLine(pid.output))).append('\n');
+        RootShell.Result log = RootShell.run("tail -n 20 " + LOG + " 2>/dev/null || true", 4000);
         out.append("helper log: ").append(valueOrNone(oneLine(log.output))).append('\n');
-        out.append("localhost:53 probe: ").append(probeLocalDns53() ? "OK" : "FAIL").append('\n');
+        out.append("backend 127.0.0.1:").append(BuildConfig.DNS_PROXY_PORT)
+                .append(" UDP=").append(probeDnsUdp(BuildConfig.DNS_PROXY_PORT, 6000) ? "OK" : "FAIL")
+                .append(" TCP=").append(probeDnsTcp(BuildConfig.DNS_PROXY_PORT, 6000) ? "OK" : "FAIL").append('\n');
+        out.append("localhost:53 UDP=").append(probeDnsUdp(53, 8000) ? "OK" : "FAIL")
+                .append(" TCP=").append(probeDnsTcp(53, 8000) ? "OK" : "FAIL").append('\n');
         out.append("strategy order: setnetdns -> legacy interface resolver -> net.dns properties\n");
         out.append("data path: Android resolver -> 127.0.0.1:53 -> root bridge -> 127.0.0.1:")
                 .append(BuildConfig.DNS_PROXY_PORT).append(" -> DoH\n");
@@ -144,21 +172,77 @@ final class RootResolverManager {
     }
 
     private static RootShell.Result startHelper(Context context, int proxyPort) {
+        stopHelper();
+
+        String nativeDir = context.getApplicationInfo().nativeLibraryDir;
+        String packaged = nativeDir == null ? "" : nativeDir + "/libtdns53.so";
+        if (packaged.length() == 0) {
+            return new RootShell.Result(42, "nativeLibraryDir unavailable");
+        }
+        String staged = stageNativeHelper(context, packaged);
+
+        String qsrc = quote(packaged);
+        String qstage = staged.length() == 0 ? "''" : quote(staged);
+        String prep =
+                "rm -f " + quote(BIN) + " " + quote(PID) + " " + quote(LOG) + "; " +
+                "src=" + qsrc + "; if [ ! -r \"$src\" ] && [ -n " + qstage + " ] && [ -r " + qstage + " ]; then src=" + qstage + "; fi; " +
+                "if [ ! -r \"$src\" ]; then echo 'native helper source unreadable'; echo packaged=" + qsrc + "; echo staged=" + qstage + "; exit 42; fi; " +
+                "cat \"$src\" > " + quote(BIN) + " || exit 43; " +
+                "chmod 0755 " + quote(BIN) + " || exit 44; " +
+                "(" + quote(BIN) + " " + proxyPort + " >" + quote(LOG) + " 2>&1 </dev/null & echo $! >" + quote(PID) + "); " +
+                "ready=0; i=0; while [ $i -lt 8 ]; do i=$((i+1)); " +
+                "p=$(cat " + quote(PID) + " 2>/dev/null); " +
+                "if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null && grep -q '^READY ' " + quote(LOG) + " 2>/dev/null; then ready=1; break; fi; " +
+                "sleep 1; done; " +
+                "p=$(cat " + quote(PID) + " 2>/dev/null); " +
+                "echo backend=native; echo source=$src; echo pid=$p; " +
+                "if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then echo alive=yes; else echo alive=no; fi; " +
+                "cat " + quote(LOG) + " 2>/dev/null || true; " +
+                "[ $ready -eq 1 ]";
+        RootShell.Result nativeStart = RootShell.run(prep, 14000);
+        if (nativeStart.ok()) return nativeStart;
+
+        // Last-resort compatibility fallback for builds that somehow omit/exclude the native
+        // helper. app_process is retained only as a diagnostic fallback, not the primary path.
         RootShell.Result appProcess = RootShell.run(
                 "for p in /system/bin/app_process /system/bin/app_process64 /system/bin/app_process32; do " +
                 "[ -x \"$p\" ] && { echo \"$p\"; exit 0; }; done; exit 1", 5000);
         if (!appProcess.ok() || clean(appProcess.output).length() == 0) {
-            return new RootShell.Result(42, "app_process executable not found: " + appProcess.output);
+            return new RootShell.Result(42, "native helper failed: " + nativeStart.output +
+                    " | app_process executable not found: " + appProcess.output);
         }
         String appProcessPath = clean(appProcess.output).split("\\s+")[0];
-        stopHelper();
         String apk = context.getApplicationInfo().sourceDir;
-        String start = "rm -f " + PID + " " + LOG + "; " +
+        String fallback = "rm -f " + PID + " " + LOG + "; " +
                 "(CLASSPATH=" + quote(apk) + " " + quote(appProcessPath) +
                 " /system/bin com.tommy.rootdns.RootPort53Forwarder " + proxyPort +
                 " >" + LOG + " 2>&1 & echo $! >" + PID + "); " +
-                "sleep 1; echo pid=$(cat " + PID + " 2>/dev/null); cat " + LOG + " 2>/dev/null || true";
-        return RootShell.run(start, 8000);
+                "sleep 2; echo backend=app_process-fallback; echo pid=$(cat " + PID + " 2>/dev/null); cat " + LOG + " 2>/dev/null || true";
+        RootShell.Result old = RootShell.run(fallback, 8000);
+        return new RootShell.Result(old.code, "native helper failed: " + oneLine(nativeStart.output) + "\n" + old.output);
+    }
+
+    private static String stageNativeHelper(Context context, String packaged) {
+        FileInputStream in = null;
+        FileOutputStream out = null;
+        try {
+            File external = context.getExternalCacheDir();
+            if (external == null) return "";
+            File staged = new File(external, "tdns53.bin");
+            in = new FileInputStream(packaged);
+            out = new FileOutputStream(staged, false);
+            byte[] buffer = new byte[16384];
+            int n;
+            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+            out.flush();
+            staged.setReadable(true, false);
+            return staged.getAbsolutePath();
+        } catch (Throwable ignored) {
+            return "";
+        } finally {
+            if (in != null) try { in.close(); } catch (Throwable ignored) {}
+            if (out != null) try { out.close(); } catch (Throwable ignored) {}
+        }
     }
 
     private static ApplyResult applyBestResolver(ResolverState state) {
@@ -275,13 +359,17 @@ final class RootResolverManager {
     }
 
     private static boolean probeLocalDns53() {
+        return probeDnsUdp(53, 8000);
+    }
+
+    private static boolean probeDnsUdp(int port, int timeoutMs) {
         DatagramSocket socket = null;
         try {
             socket = new DatagramSocket();
-            socket.setSoTimeout(5000);
+            socket.setSoTimeout(timeoutMs);
             byte[] query = DnsPackets.aQuery("example.com");
             DatagramPacket p = new DatagramPacket(query, query.length,
-                    new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 53));
+                    new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port));
             socket.send(p);
             byte[] buf = new byte[4096];
             DatagramPacket r = new DatagramPacket(buf, buf.length);
@@ -291,6 +379,30 @@ final class RootResolverManager {
             return false;
         } finally {
             if (socket != null) socket.close();
+        }
+    }
+
+    private static boolean probeDnsTcp(int port, int timeoutMs) {
+        java.net.Socket socket = null;
+        try {
+            byte[] query = DnsPackets.aQuery("example.com");
+            socket = new java.net.Socket();
+            socket.connect(new InetSocketAddress("127.0.0.1", port), Math.min(timeoutMs, 5000));
+            socket.setSoTimeout(timeoutMs);
+            java.io.DataOutputStream out = new java.io.DataOutputStream(socket.getOutputStream());
+            java.io.DataInputStream in = new java.io.DataInputStream(socket.getInputStream());
+            out.writeShort(query.length);
+            out.write(query);
+            out.flush();
+            int len = in.readUnsignedShort();
+            if (len < 12 || len > 65535) return false;
+            byte[] answer = new byte[len];
+            in.readFully(answer);
+            return (answer[2] & 0x80) != 0;
+        } catch (Throwable ignored) {
+            return false;
+        } finally {
+            if (socket != null) try { socket.close(); } catch (Throwable ignored) {}
         }
     }
 
@@ -320,18 +432,20 @@ final class RootResolverManager {
             }
         } catch (Throwable ignored) {}
 
-        // AOSP Android 7 dumps "Active default network: <netId>" near the top.
+        // Virtual Android often hides getActiveNetwork() from apps while dumpsys still
+        // contains the real default network. Parse the default network block, including
+        // InterfaceName and DnsAddresses, instead of relying on toolbox awk.
+        RootShell.Result dump = RootShell.run("dumpsys connectivity 2>/dev/null | head -n 180 || true", 7000);
+        String dumpText = dump.output == null ? "" : dump.output;
         if (netId <= 0) {
-            RootShell.Result dump = RootShell.run("dumpsys connectivity 2>/dev/null | head -n 120 || true", 6000);
-            String text = dump.output == null ? "" : dump.output;
-            Matcher m = ACTIVE_DEFAULT.matcher(text);
+            Matcher m = ACTIVE_DEFAULT.matcher(dumpText);
             if (m.find()) {
                 try {
                     netId = Integer.parseInt(m.group(1));
                     source = "dumpsys Active default network";
                 } catch (Throwable ignored) {}
             } else {
-                Matcher wrapped = NETWORK_WRAPPED.matcher(text);
+                Matcher wrapped = NETWORK_WRAPPED.matcher(dumpText);
                 if (wrapped.find()) {
                     try {
                         netId = Integer.parseInt(wrapped.group(1));
@@ -341,14 +455,27 @@ final class RootResolverManager {
             }
         }
 
+        String defaultBlock = dumpText;
+        if (netId > 0) {
+            int at = dumpText.indexOf("network{" + netId + "}");
+            if (at >= 0) defaultBlock = dumpText.substring(at, Math.min(dumpText.length(), at + 5000));
+        }
         if (iface.length() == 0) {
-            RootShell.Result route = RootShell.run(
-                    "awk 'NR>1 && $2==\"00000000\" {print $1; exit}' /proc/net/route 2>/dev/null", 4000);
-            iface = firstToken(route.output);
-            if (iface.length() == 0) {
-                route = RootShell.run("ip route show default 2>/dev/null | awk '/^default/ {for(i=1;i<=NF;i++) if($i==\"dev\") {print $(i+1); exit}}'", 4000);
-                iface = firstToken(route.output);
-            }
+            Matcher im = Pattern.compile("InterfaceName:\\s*([A-Za-z0-9_.:-]+)").matcher(defaultBlock);
+            if (im.find()) iface = clean(im.group(1));
+        }
+        if (dns.length() == 0) {
+            Matcher dm = Pattern.compile("DnsAddresses:\\s*\\[([^\\]]*)\\]").matcher(defaultBlock);
+            if (dm.find()) dns = normalizeDnsList(dm.group(1));
+        }
+        if (domains.length() == 0) {
+            Matcher dom = Pattern.compile("Domains:\\s*([^ }\\r\\n]+)").matcher(defaultBlock);
+            if (dom.find() && !"null".equalsIgnoreCase(dom.group(1))) domains = clean(dom.group(1));
+        }
+
+        if (iface.length() == 0) {
+            RootShell.Result route = RootShell.run("cat /proc/net/route 2>/dev/null || true", 4000);
+            iface = defaultIfaceFromRoute(route.output);
             if (iface.length() > 0 && source.length() == 0) source = "/proc/net/route";
         }
 
@@ -365,6 +492,30 @@ final class RootResolverManager {
         }
         if (domains.length() == 0) domains = prop("net.dns.search");
         return new ResolverState(netId, iface, dns, domains, source);
+    }
+
+    private static String normalizeDnsList(String raw) {
+        if (raw == null) return "";
+        StringBuilder out = new StringBuilder();
+        for (String part : raw.split("[,\\s]+")) {
+            part = clean(part);
+            if (!isIpv4(part)) continue;
+            if (out.length() > 0) out.append(' ');
+            out.append(part);
+        }
+        return out.toString();
+    }
+
+    private static String defaultIfaceFromRoute(String text) {
+        if (text == null) return "";
+        String[] lines = text.split("\\r?\\n");
+        for (int i = 1; i < lines.length; i++) {
+            String line = clean(lines[i]);
+            if (line.length() == 0) continue;
+            String[] fields = line.split("\\s+");
+            if (fields.length >= 2 && "00000000".equals(fields[1])) return fields[0];
+        }
+        return "";
     }
 
     private static String dnsFromLinkProperties(LinkProperties lp) {
@@ -388,10 +539,22 @@ final class RootResolverManager {
 
     private static boolean commandLooksSuccessful(RootShell.Result result) {
         if (result == null || result.code != 0) return false;
-        String lower = result.output == null ? "" : result.output.toLowerCase();
-        return lower.indexOf("failed") < 0 && lower.indexOf("error") < 0 &&
-                lower.indexOf("unknown command") < 0 && lower.indexOf("syntax") < 0 &&
-                lower.indexOf("wrong number") < 0;
+        String value = result.output == null ? "" : result.output;
+        String lower = value.toLowerCase();
+        if (Pattern.compile("(?m)^\\s*5\\d\\d\\s").matcher(value).find()) return false;
+        if (lower.indexOf("failed") >= 0 || lower.indexOf("error") >= 0 ||
+                lower.indexOf("unknown command") >= 0 || lower.indexOf("syntax") >= 0 ||
+                lower.indexOf("wrong number") >= 0 || lower.indexOf("missing argument") >= 0) return false;
+        // netd's command protocol reports success as 2xx; if a numeric protocol status
+        // is present, require 2xx instead of trusting the ndc process exit code alone.
+        Matcher numeric = Pattern.compile("(?m)^\\s*(\\d{3})\\s").matcher(value);
+        if (numeric.find()) {
+            try {
+                int status = Integer.parseInt(numeric.group(1));
+                return status >= 200 && status < 300;
+            } catch (Throwable ignored) {}
+        }
+        return true;
     }
 
     private static boolean isIpv4(String s) {

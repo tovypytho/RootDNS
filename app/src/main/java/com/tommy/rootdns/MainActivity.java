@@ -203,7 +203,7 @@ public final class MainActivity extends Activity {
         copy.setOnClickListener(v -> copyDiagnostics());
         body.addView(copy, lp(-1, dp(48), 0, 0, 0, 18));
 
-        TextView note = text("v1.5 adds a legacy resolver path for virtual Android builds where ConnectivityManager exposes no netId. It starts the root localhost:53 bridge first, detects the default interface from the route table, tries netd per-network and legacy interface commands, then falls back to net.dns properties with DNS-cache invalidation. VPN is skipped when the kernel definitively has no TUN driver.", 12,
+        TextView note = text("v1.7 replaces the fragile app_process port-53 bridge with a tiny native ARM64/ARMv7 root helper, validates the app-side 5454 proxy before bridging, parses the real eth0/default network from dumpsys/route data, and rejects netd 5xx replies. The persistent root session from v1.6 remains, so Superuser-granted toast spam stays suppressed.", 12,
                 Color.rgb(120, 128, 140));
         body.addView(note);
 
@@ -304,7 +304,14 @@ public final class MainActivity extends Activity {
     }
 
     private void copyDiagnostics() {
-        String value = diagnostics == null ? AppPrefs.diagnostics(this) : diagnostics.getText().toString();
+        // Always prefer the persisted full report. The on-screen TextView can temporarily
+        // contain status text (for example "Running diagnostics…") and older Android
+        // builds may render very large reports awkwardly.
+        String saved = AppPrefs.diagnostics(this);
+        String value = saved == null ? "" : saved.trim();
+        if (value.length() == 0 || "Not run yet".equals(value)) {
+            value = diagnostics == null ? "" : diagnostics.getText().toString();
+        }
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard != null) {
             clipboard.setPrimaryClip(ClipData.newPlainText("TommyRootDNS diagnostics", value));

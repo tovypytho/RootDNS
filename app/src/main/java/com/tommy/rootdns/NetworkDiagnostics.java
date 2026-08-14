@@ -26,6 +26,7 @@ final class NetworkDiagnostics {
         out.append("endpoint=").append(AppPrefs.endpoint(context)).append("\n\n");
 
         appendCommand(out, "id", RootShell.run("id", 7000));
+        out.append("rootSession=").append(RootShell.sessionMode()).append("\n\n");
         appendCommand(out, "uname", RootShell.run("uname -a 2>/dev/null || true", 7000));
         appendCommand(out, "SELinux", RootShell.run("getenforce 2>/dev/null || cat /sys/fs/selinux/enforce 2>/dev/null || true", 7000));
         appendCommand(out, "capabilities", RootShell.run("grep -E '^Cap(Inh|Prm|Eff|Bnd):' /proc/self/status 2>/dev/null || true", 7000));
@@ -43,7 +44,7 @@ final class NetworkDiagnostics {
         out.append("route scope: synthetic DNS server only\n");
         out.append("transport: system DNS UDP/53 -> TUN -> DoH\n");
         out.append("non-DNS traffic: not routed through Tommy VPN\n");
-        out.append("v1.4 VPN MTU: unset by default; 1500 only as last compatibility retry\n");
+        out.append("VPN MTU: unset by default; 1500 only as last compatibility retry\n");
         return limit(out.toString(), 24000);
     }
 
